@@ -1,0 +1,12 @@
+{
+  "name": "pi-inference-runner",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "npm --prefix frontend run dev",
+    "mock": "node tools/mock-api.mjs",
+    "build": "npm --prefix frontend run build",
+    "check": "npm --prefix frontend run check"
+  }
+}
+

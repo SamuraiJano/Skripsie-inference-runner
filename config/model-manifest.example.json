@@ -1,0 +1,22 @@
+{
+  "name": "Naartjie detector",
+  "task": "yolo-detect",
+  "input": {
+    "width": 640,
+    "height": 640,
+    "blob": "in0",
+    "mean": [0.0, 0.0, 0.0],
+    "norm": [0.0039215686, 0.0039215686, 0.0039215686]
+  },
+  "outputs": ["out0"],
+  "labels": ["healthy", "blemish", "rot"],
+  "runtime": {
+    "threads": 4
+  },
+  "classification": {
+    "applySoftmax": false,
+    "topK": 5
+  },
+  "maxDetections": 300
+}
+
