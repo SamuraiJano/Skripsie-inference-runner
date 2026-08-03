@@ -1,9 +1,11 @@
 #include "runner/Engine.hpp"
+#include "runner/YoloPostprocess.hpp"
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <iostream>
 #include <limits>
 #include <memory>
 #include <numeric>
@@ -21,6 +23,9 @@
 #if RUNNER_WITH_NCNN
 #include <cpu.h>
 #include <net.h>
+#if NCNN_VULKAN
+#include <gpu.h>
+#endif
 #endif
 
 namespace runner {
@@ -34,6 +39,23 @@ double milliseconds(Clock::time_point start, Clock::time_point end) {
 
 #if RUNNER_WITH_NCNN
 
+int resolve_gpu_index(int requested_index) {
+#if NCNN_VULKAN
+    const int count = ncnn::get_gpu_count();
+    if (count < 1) {
+        throw std::runtime_error("no Vulkan compute device was found; update the NVIDIA driver and run scripts/setup_windows.ps1");
+    }
+    const int index = requested_index < 0 ? ncnn::get_default_gpu_index() : requested_index;
+    if (index < 0 || index >= count) {
+        throw std::runtime_error("runtime.gpuDevice does not match an available Vulkan GPU");
+    }
+    return index;
+#else
+    (void)requested_index;
+    throw std::runtime_error("this NCNN build has no Vulkan support; rebuild with scripts/build_windows.ps1");
+#endif
+}
+
 struct DecodedImage {
     int width = 0;
     int height = 0;
@@ -44,6 +66,15 @@ struct Letterbox {
     float scale = 1.0F;
     int pad_x = 0;
     int pad_y = 0;
+};
+
+struct YoloCandidate {
+    Detection detection;
+    float model_x1 = 0.0F;
+    float model_y1 = 0.0F;
+    float model_x2 = 0.0F;
+    float model_y2 = 0.0F;
+    std::vector<float> mask_coefficients;
 };
 
 struct MatrixView {
@@ -129,17 +160,18 @@ float box_iou(const Detection& first, const Detection& second) {
     return area <= 0.0F ? 0.0F : intersection / area;
 }
 
-std::vector<Detection> decode_yolo(
+std::vector<YoloCandidate> decode_yolo(
     const ncnn::Mat& output,
     const ModelConfig& config,
     const DecodedImage& image,
     const Letterbox& letterbox,
     float confidence_threshold,
-    float iou_threshold
+    float iou_threshold,
+    int mask_dimension = 0
 ) {
     const MatrixView matrix = as_matrix(output);
     const int class_count = static_cast<int>(config.labels.size());
-    const int minimum_features = 4 + class_count;
+    const int minimum_features = 4 + class_count + mask_dimension;
     bool transposed = false;
 
     if (matrix.columns == 6) {
@@ -160,7 +192,7 @@ std::vector<Detection> decode_yolo(
         return transposed ? matrix.at(column, row) : matrix.at(row, column);
     };
 
-    std::vector<Detection> candidates;
+    std::vector<YoloCandidate> candidates;
     candidates.reserve(std::min(rows, 3000));
     for (int row = 0; row < rows; ++row) {
         int class_id = 0;
@@ -197,29 +229,48 @@ std::vector<Detection> decode_yolo(
         }
 
         if (!std::isfinite(score) || score < confidence_threshold || class_id < 0 || class_id >= class_count) continue;
-        x1 = (x1 - static_cast<float>(letterbox.pad_x)) / letterbox.scale;
-        y1 = (y1 - static_cast<float>(letterbox.pad_y)) / letterbox.scale;
-        x2 = (x2 - static_cast<float>(letterbox.pad_x)) / letterbox.scale;
-        y2 = (y2 - static_cast<float>(letterbox.pad_y)) / letterbox.scale;
+        const float model_x1 = x1;
+        const float model_y1 = y1;
+        const float model_x2 = x2;
+        const float model_y2 = y2;
+        x1 = (model_x1 - static_cast<float>(letterbox.pad_x)) / letterbox.scale;
+        y1 = (model_y1 - static_cast<float>(letterbox.pad_y)) / letterbox.scale;
+        x2 = (model_x2 - static_cast<float>(letterbox.pad_x)) / letterbox.scale;
+        y2 = (model_y2 - static_cast<float>(letterbox.pad_y)) / letterbox.scale;
         x1 = std::clamp(x1, 0.0F, static_cast<float>(image.width));
         y1 = std::clamp(y1, 0.0F, static_cast<float>(image.height));
         x2 = std::clamp(x2, 0.0F, static_cast<float>(image.width));
         y2 = std::clamp(y2, 0.0F, static_cast<float>(image.height));
         if (x2 <= x1 || y2 <= y1) continue;
-        candidates.push_back({class_id, config.labels[static_cast<std::size_t>(class_id)], score, x1, y1, x2 - x1, y2 - y1});
+        YoloCandidate candidate;
+        candidate.detection = {class_id, config.labels[static_cast<std::size_t>(class_id)], score, x1, y1, x2 - x1, y2 - y1};
+        candidate.model_x1 = model_x1;
+        candidate.model_y1 = model_y1;
+        candidate.model_x2 = model_x2;
+        candidate.model_y2 = model_y2;
+        if (mask_dimension > 0) {
+            if (columns != 4 + class_count + mask_dimension) {
+                throw std::runtime_error("YOLO segmentation feature count does not match 4 + classes + prototype channels");
+            }
+            candidate.mask_coefficients.reserve(static_cast<std::size_t>(mask_dimension));
+            for (int index = 0; index < mask_dimension; ++index) {
+                candidate.mask_coefficients.push_back(feature(row, 4 + class_count + index));
+            }
+        }
+        candidates.push_back(std::move(candidate));
     }
 
-    std::sort(candidates.begin(), candidates.end(), [](const Detection& first, const Detection& second) {
-        return first.confidence > second.confidence;
+    std::sort(candidates.begin(), candidates.end(), [](const YoloCandidate& first, const YoloCandidate& second) {
+        return first.detection.confidence > second.detection.confidence;
     });
     if (candidates.size() > 3000) candidates.resize(3000);
 
-    std::vector<Detection> kept;
+    std::vector<YoloCandidate> kept;
     kept.reserve(std::min(static_cast<std::size_t>(config.max_detections), candidates.size()));
     for (const auto& candidate : candidates) {
         bool suppressed = false;
         for (const auto& previous : kept) {
-            if (candidate.class_id == previous.class_id && box_iou(candidate, previous) > iou_threshold) {
+            if (candidate.detection.class_id == previous.detection.class_id && box_iou(candidate.detection, previous.detection) > iou_threshold) {
                 suppressed = true;
                 break;
             }
@@ -228,6 +279,33 @@ std::vector<Detection> decode_yolo(
         if (static_cast<int>(kept.size()) >= config.max_detections) break;
     }
     return kept;
+}
+
+MaskRle reconstruct_mask(
+    const YoloCandidate& candidate,
+    const ncnn::Mat& prototypes,
+    const ModelConfig& config,
+    const DecodedImage& image,
+    const Letterbox& letterbox
+) {
+    if (prototypes.empty() || prototypes.dims != 3 || prototypes.elempack != 1 || prototypes.elembits() != 32) {
+        throw std::runtime_error("YOLO prototype output must be an unpacked float32 [channels,height,width] tensor");
+    }
+    if (static_cast<int>(candidate.mask_coefficients.size()) != prototypes.c) {
+        throw std::runtime_error("YOLO mask coefficient count does not match prototype channels");
+    }
+    const std::size_t plane = static_cast<std::size_t>(prototypes.w * prototypes.h);
+    std::vector<float> flattened(plane * static_cast<std::size_t>(prototypes.c));
+    for (int channel = 0; channel < prototypes.c; ++channel) {
+        const float* prototype = prototypes.channel(channel);
+        std::copy(prototype, prototype + plane, flattened.begin() + static_cast<std::size_t>(channel) * plane);
+    }
+    return decode_yolo_mask_rle({
+        image.width, image.height, config.input_width, config.input_height,
+        prototypes.w, prototypes.h, prototypes.c, letterbox.scale, letterbox.pad_x, letterbox.pad_y,
+        candidate.detection.x, candidate.detection.y, candidate.detection.width, candidate.detection.height,
+        config.mask_threshold, candidate.mask_coefficients, std::move(flattened),
+    });
 }
 
 std::vector<float> flat_values(const ncnn::Mat& value, std::size_t limit = std::numeric_limits<std::size_t>::max()) {
@@ -284,21 +362,35 @@ public:
     NcnnEngine(ModelConfig config, const std::filesystem::path& param_path, const std::filesystem::path& bin_path)
         : config_(std::move(config)) {
         ncnn::set_cpu_powersave(0);
-        net_.opt.num_threads = std::clamp(config_.threads, 1, 4);
+        ncnn::set_omp_dynamic(0);
+        ncnn::set_omp_num_threads(config_.threads);
+        net_.opt.num_threads = std::clamp(config_.threads, 1, 16);
         net_.opt.lightmode = true;
-        net_.opt.use_vulkan_compute = false;
+        gpu_index_ = resolve_gpu_index(config_.gpu_device);
+#if NCNN_VULKAN
+        net_.set_vulkan_device(gpu_index_);
+#endif
+        net_.opt.use_vulkan_compute = true;
         net_.opt.use_packing_layout = true;
         net_.opt.use_winograd_convolution = true;
         net_.opt.use_sgemm_convolution = true;
-        net_.opt.use_int8_inference = true;
-        net_.opt.use_int8_storage = true;
-        net_.opt.use_fp16_storage = false;
-        net_.opt.use_fp16_arithmetic = false;
+        net_.opt.use_int8_inference = config_.use_int8_inference;
+        net_.opt.use_int8_storage = config_.use_int8_storage;
+        net_.opt.use_fp16_storage = config_.use_fp16_storage;
+        net_.opt.use_fp16_arithmetic = config_.use_fp16_arithmetic;
+        net_.opt.use_fp16_packed = config_.use_fp16_storage || config_.use_fp16_arithmetic;
         net_.opt.use_bf16_storage = false;
         net_.opt.use_mapped_model_loading = true;
 
+        std::cerr << "Loading NCNN graph: " << param_path << '\n';
         if (net_.load_param(param_path.string().c_str()) != 0) throw std::runtime_error("NCNN could not load model.param");
+        std::cerr << "Loading NCNN weights: " << bin_path << '\n';
         if (net_.load_model(bin_path.string().c_str()) != 0) throw std::runtime_error("NCNN could not load model.bin");
+        std::cerr << "NCNN model ready: " << config_.name << " (" << precision_name(config_.precision)
+#if NCNN_VULKAN
+                  << ", Vulkan GPU " << gpu_index_ << ": " << ncnn::get_gpu_info(gpu_index_).device_name()
+#endif
+                  << ")\n";
     }
 
     InferenceResult infer(const std::vector<unsigned char>& encoded_image, float confidence, float iou) override {
@@ -328,14 +420,33 @@ public:
         }
         const auto inference_end = Clock::now();
 
-        const auto postprocess_start = inference_end;
+        const auto detection_start = inference_end;
         InferenceResult result;
         result.model_id = config_.id;
         result.task = config_.task;
         result.source_width = image.width;
         result.source_height = image.height;
         if (config_.task == ModelTask::YoloDetect) {
-            result.detections = decode_yolo(outputs.front().second, config_, image, letterbox, confidence, iou);
+            auto candidates = decode_yolo(outputs.front().second, config_, image, letterbox, confidence, iou);
+            result.detections.reserve(candidates.size());
+            for (auto& candidate : candidates) result.detections.push_back(std::move(candidate.detection));
+        } else if (config_.task == ModelTask::YoloSegment) {
+            if (outputs.size() < 2) throw std::runtime_error("YOLO segmentation requires detection and prototype outputs");
+            const ncnn::Mat& prototypes = outputs[1].second;
+            if (prototypes.dims != 3 || prototypes.c <= 0) {
+                throw std::runtime_error("YOLO prototype output must have [channels,height,width] layout");
+            }
+            auto candidates = decode_yolo(
+                outputs.front().second, config_, image, letterbox, confidence, iou, prototypes.c);
+            const auto detection_end = Clock::now();
+            result.timing.detection_nms_ms = milliseconds(detection_start, detection_end);
+            const auto mask_start = detection_end;
+            result.detections.reserve(candidates.size());
+            for (auto& candidate : candidates) {
+                candidate.detection.mask = reconstruct_mask(candidate, prototypes, config_, image, letterbox);
+                result.detections.push_back(std::move(candidate.detection));
+            }
+            result.timing.mask_reconstruction_ms = milliseconds(mask_start, Clock::now());
         } else if (config_.task == ModelTask::Classification) {
             result.classifications = classify(outputs.front().second, config_);
         } else {
@@ -348,13 +459,16 @@ public:
         result.timing.decode_ms = milliseconds(decode_start, decode_end);
         result.timing.preprocess_ms = milliseconds(preprocess_start, preprocess_end);
         result.timing.inference_ms = milliseconds(inference_start, inference_end);
-        result.timing.postprocess_ms = milliseconds(postprocess_start, postprocess_end);
-        result.timing.total_ms = milliseconds(total_start, postprocess_end);
+        if (config_.task != ModelTask::YoloSegment) {
+            result.timing.detection_nms_ms = milliseconds(detection_start, postprocess_end);
+        }
+        result.timing.backend_total_ms = milliseconds(total_start, postprocess_end);
         return result;
     }
 
 private:
     ModelConfig config_;
+    int gpu_index_ = -1;
     ncnn::Net net_;
 };
 
@@ -362,7 +476,7 @@ private:
 
 }  // namespace
 
-std::unique_ptr<InferenceEngine> create_engine(
+std::unique_ptr<InferenceEngine> create_ncnn_engine(
     const ModelConfig& config,
     const std::filesystem::path& param_path,
     const std::filesystem::path& bin_path
@@ -385,9 +499,26 @@ bool ncnn_available() {
 #endif
 }
 
+EngineRuntimeInfo engine_runtime_info() {
+    EngineRuntimeInfo info;
+#if RUNNER_WITH_NCNN
+    info.ncnn_available = true;
+#if NCNN_VULKAN
+    info.vulkan_compiled = true;
+    info.gpu_count = ncnn::get_gpu_count();
+    if (info.gpu_count > 0) {
+        info.default_gpu_index = ncnn::get_default_gpu_index();
+        info.default_gpu_name = ncnn::get_gpu_info(info.default_gpu_index).device_name();
+    }
+#endif
+#endif
+    return info;
+}
+
 std::string engine_name() {
 #if RUNNER_WITH_NCNN
-    return "NCNN 20260526 / CPU";
+    const EngineRuntimeInfo info = engine_runtime_info();
+    return info.vulkan_compiled && info.gpu_count > 0 ? "NCNN 20260526 / Vulkan GPU" : "NCNN 20260526 / GPU unavailable";
 #else
     return "NCNN unavailable";
 #endif

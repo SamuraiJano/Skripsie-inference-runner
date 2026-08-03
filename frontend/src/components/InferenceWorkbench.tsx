@@ -1,7 +1,7 @@
 import { Clock3, Crosshair, ImagePlus, Layers3, Play, ScanLine, Sparkles, X } from 'lucide-react'
-import { ChangeEvent, DragEvent, useEffect, useMemo, useState } from 'react'
+import { ChangeEvent, DragEvent, useEffect, useRef, useState } from 'react'
 import { api, errorMessage } from '../api'
-import type { InferenceResult, StoredModel } from '../types'
+import type { Detection, InferenceResult, StoredModel } from '../types'
 
 interface Props {
   activeModel: StoredModel | undefined
@@ -11,8 +11,91 @@ interface Props {
 
 const boxColors = ['#b8f26a', '#ffb84d', '#66d9ff', '#dca6ff', '#ff7f88']
 
-function percent(value: number, total: number) {
-  return `${Math.max(0, Math.min(100, (value / Math.max(1, total)) * 100))}%`
+function MaskOverlay({ result }: { result: InferenceResult }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    const context = canvas?.getContext('2d')
+    if (!canvas || !context) return
+    context.clearRect(0, 0, result.sourceWidth, result.sourceHeight)
+    const pixels = new Uint8ClampedArray(result.sourceWidth * result.sourceHeight * 4)
+
+    result.detections.forEach((detection) => {
+      const mask = detection.mask
+      if (!mask || mask.width !== result.sourceWidth || mask.height !== result.sourceHeight) return
+      const color = boxColors[detection.classId % boxColors.length]
+      const red = Number.parseInt(color.slice(1, 3), 16)
+      const green = Number.parseInt(color.slice(3, 5), 16)
+      const blue = Number.parseInt(color.slice(5, 7), 16)
+      let cursor = 0
+      let foreground = false
+      for (const count of mask.counts) {
+        const end = Math.min(cursor + Math.max(0, count), mask.width * mask.height)
+        if (foreground) {
+          for (let index = cursor; index < end; index += 1) {
+            const offset = index * 4
+            pixels[offset] = red
+            pixels[offset + 1] = green
+            pixels[offset + 2] = blue
+            pixels[offset + 3] = 92
+          }
+        }
+        cursor = end
+        foreground = !foreground
+        if (cursor >= mask.width * mask.height) break
+      }
+    })
+    context.putImageData(new ImageData(pixels, result.sourceWidth, result.sourceHeight), 0, 0)
+  }, [result])
+
+  return <canvas className="mask-overlay" ref={canvasRef} width={result.sourceWidth} height={result.sourceHeight} aria-hidden="true" />
+}
+
+function DetectionOverlay({ detections, width, height }: { detections: Detection[]; width: number; height: number }) {
+  const strokeWidth = Math.max(1.5, width / 360)
+  return (
+    <svg className="detection-overlay" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+      {detections.map((detection, index) => {
+        const color = boxColors[detection.classId % boxColors.length]
+        return (
+          <rect
+            key={`${detection.classId}-${detection.trackId ?? index}`}
+            x={detection.x}
+            y={detection.y}
+            width={detection.width}
+            height={detection.height}
+            fill="none"
+            stroke={color}
+            strokeWidth={strokeWidth}
+          />
+        )
+      })}
+    </svg>
+  )
+}
+
+function TimingDetails({ result }: { result: InferenceResult }) {
+  const timing = result.timing
+  const rows = [
+    ['Decode', timing.decodeMs],
+    ['Preprocess', timing.preprocessMs],
+    ['Inference', timing.inferenceMs],
+    ['Detection + NMS', timing.detectionNmsMs],
+    ['Mask reconstruction', timing.maskReconstructionMs],
+    ['Tracking', timing.trackingMs],
+    ['Queue wait', timing.queueWaitMs],
+    ['Grading', timing.gradingMs],
+    ['Backend total', timing.backendTotalMs],
+    ['HTTP round trip', result.clientHttpRoundTripMs ?? 0],
+  ] as const
+  return (
+    <div className="timing-grid" aria-label="Sequential request timing breakdown">
+      {rows.map(([label, milliseconds]) => (
+        <div key={label}><span>{label}</span><strong>{milliseconds.toFixed(1)} ms</strong></div>
+      ))}
+    </div>
+  )
 }
 
 export function InferenceWorkbench({ activeModel, online, onError }: Props) {
@@ -35,8 +118,6 @@ export function InferenceWorkbench({ activeModel, online, onError }: Props) {
   }, [image])
 
   useEffect(() => setResult(null), [activeModel?.id, image])
-
-  const fps = useMemo(() => result ? 1000 / Math.max(0.01, result.timing.totalMs) : 0, [result])
 
   function chooseFile(file?: File) {
     if (!file) return
@@ -78,7 +159,10 @@ export function InferenceWorkbench({ activeModel, online, onError }: Props) {
           <h2 id="workbench-title">Inference workbench</h2>
         </div>
         {result && (
-          <div className="latency-chip"><Clock3 size={14} /> {result.timing.totalMs.toFixed(1)} ms <span>{fps.toFixed(1)} FPS</span></div>
+          <div className="latency-chip">
+            <Clock3 size={14} /> {result.timing.backendTotalMs.toFixed(1)} ms
+            <span>sequential request</span>
+          </div>
         )}
       </div>
 
@@ -98,24 +182,8 @@ export function InferenceWorkbench({ activeModel, online, onError }: Props) {
       ) : (
         <div className="preview-stage">
           <img src={previewUrl} alt="Selected inference input" />
-          {result?.detections.map((detection, index) => {
-            const color = boxColors[detection.classId % boxColors.length]
-            return (
-              <div
-                className="detection-box"
-                key={`${detection.classId}-${index}`}
-                style={{
-                  left: percent(detection.x, result.sourceWidth),
-                  top: percent(detection.y, result.sourceHeight),
-                  width: percent(detection.width, result.sourceWidth),
-                  height: percent(detection.height, result.sourceHeight),
-                  borderColor: color,
-                }}
-              >
-                <span style={{ backgroundColor: color }}>{detection.label} {(detection.confidence * 100).toFixed(0)}%</span>
-              </div>
-            )
-          })}
+          {result && <MaskOverlay result={result} />}
+          {result && <DetectionOverlay detections={result.detections} width={result.sourceWidth} height={result.sourceHeight} />}
           {running && <div className="inference-overlay"><ScanLine size={34} /><strong>Running on device</strong></div>}
           <button className="preview-remove" onClick={() => setImage(null)} aria-label="Remove selected image"><X size={16} /></button>
         </div>
@@ -148,16 +216,18 @@ export function InferenceWorkbench({ activeModel, online, onError }: Props) {
           <div className="result-summary">
             <div><Crosshair size={16} /><span>Detections</span><strong>{result.detections.length}</strong></div>
             <div><Sparkles size={16} /><span>Model compute</span><strong>{result.timing.inferenceMs.toFixed(1)} ms</strong></div>
-            <div><ScanLine size={16} /><span>Pre + post</span><strong>{(result.timing.preprocessMs + result.timing.postprocessMs).toFixed(1)} ms</strong></div>
+            <div><ScanLine size={16} /><span>HTTP round trip</span><strong>{(result.clientHttpRoundTripMs ?? 0).toFixed(1)} ms</strong></div>
           </div>
+
+          <TimingDetails result={result} />
 
           {result.detections.length > 0 && (
             <div className="result-list">
               {result.detections.map((detection, index) => (
-                <div className="result-row" key={`${detection.label}-${index}`}>
+                <div className="result-row" key={`${detection.label}-${detection.trackId ?? index}`}>
                   <span className="class-swatch" style={{ background: boxColors[detection.classId % boxColors.length] }} />
                   <strong>{detection.label}</strong>
-                  <span>class {detection.classId}</span>
+                  <span>class {detection.classId}{detection.trackId !== null ? ` · track ${detection.trackId}` : ''}</span>
                   <div className="confidence-bar"><i style={{ width: `${detection.confidence * 100}%` }} /></div>
                   <b>{(detection.confidence * 100).toFixed(1)}%</b>
                 </div>
@@ -188,4 +258,3 @@ export function InferenceWorkbench({ activeModel, online, onError }: Props) {
     </section>
   )
 }
-

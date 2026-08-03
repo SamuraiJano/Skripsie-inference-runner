@@ -1,45 +1,72 @@
-# Runtime architecture decision
+# Windows multi-backend architecture
 
 ## Decision
 
-Use TypeScript/React for the browser interface and C++17 with NCNN for the production inference service.
+The public application remains a C++17 service with the existing React/TypeScript dashboard and conveyor pipeline. Model execution is selected per artifact:
 
-## Options considered
+- verified NCNN packages run in-process through the native Vulkan engine;
+- compatible direct artifacts run through a private Ultralytics service bound only to `127.0.0.1`;
+- the private service delegates to PyTorch, ONNX Runtime, TensorRT, or another installed export runtime and reports the actual accelerator.
 
-| Runtime | Pi 4 strengths | Main cost | Decision |
-| --- | --- | --- | --- |
-| C++ + NCNN | Direct access to NCNN's ARM NEON, packing, OpenMP, INT8, allocators, and memory-mapped loading; small production runtime | More explicit model preprocessing and output parsing | Selected |
-| C++ + ONNX Runtime | Broad `.onnx` compatibility and strong graph optimization/thread controls | Larger runtime and generally more deployment weight for a CPU-only Pi | Keep as a future optional engine if an actual model cannot be exported reliably to NCNN |
-| Python + Ultralytics/ONNX Runtime | Fastest model experimentation and broad parser support | Interpreter, wheels, framework overhead, slower startup, and more RAM pressure | Training/export only, not the production hot path |
-| Rust + bindings | Strong memory safety and good native performance | Inference bindings still wrap a C/C++ runtime, adding integration work without improving the kernels | Not selected for this runner |
-| Browser JavaScript/WASM | Simplest single-surface deployment | Browser memory limits, cross-origin isolation for WASM threading, extra copies, and less predictable sustained Pi performance | UI only |
+This preserves the low-level NCNN path while allowing a normal `.pt` model—or another supported export—to be imported without conversion.
 
-## Pi-specific choices
+## Hardware mapping
 
-- Production is CPU-only by default. NCNN's own Raspberry Pi build guidance describes Vulkan on Raspberry Pi as something to experiment with rather than a guaranteed faster path.
-- The build targets a 64-bit Cortex-A72 and disables unused NCNN tools, examples, tests, and Vulkan code.
-- `ncnn::Net` remains loaded between requests.
-- The newest pinned NCNN runtime enables memory-mapped model loading to avoid an additional large model-file copy during load.
-- HTTP connections are admitted one at a time. NCNN receives up to four compute threads without a competing HTTP worker pool.
-- Letterbox and normalization happen in C++ and feed the NCNN tensor directly. OpenCV is intentionally not a runtime dependency.
-- Postprocessing filters by confidence before NMS, caps candidates, and caps final detections.
-- The React production bundle is static and is served by the C++ process.
+| Laptop resource | Application use |
+| --- | --- |
+| RTX 4060 Laptop GPU / CUDA | PyTorch `.pt`, TorchScript, ONNX Runtime GPU, and optional TensorRT |
+| RTX 4060 Laptop GPU / Vulkan | native NCNN models |
+| Ryzen 7 7735HS | image decode, tracking, native post-processing, HTTP, file I/O, and optional CPU runtimes |
+| 32 GB RAM | loaded models, decoded frames, queues, and result data |
+| Windows power plan and GPU preference | optional `-MaxPerformance` launcher policy |
+| `nvidia-smi`, `vulkaninfo`, PowerShell/CIM | setup validation and live diagnostics |
 
-## Model contract
+No CUDA Toolkit is needed for the tested PyTorch and ONNX wheels. TensorRT has its own versioned CUDA requirements and is exposed only when its runtime imports successfully.
 
-Model execution is only reliable when four things agree with training/export:
+## Request path
 
-1. input width and height;
-2. RGB preprocessing, mean, and normalization;
-3. input/output blob names;
-4. output parser and class-label count.
+```text
+Webcam / video / image
+        |
+        v
+React capture and model library
+        |
+        v
+C++ HTTP API + persistent pipeline state
+        |
+        +-- NCNN package ----------> native NCNN / Vulkan --------+
+        |                                                       |
+        +-- direct artifact -----> loopback model service       |
+                                      |                         |
+                                      +-> PyTorch / CUDA         |
+                                      +-> ONNX Runtime / CUDA    |
+                                      +-> TensorRT / CUDA        |
+                                      +-> optional CPU runtime   |
+                                                                v
+                                         normalized result JSON
+```
 
-That contract is stored beside each imported model in `manifest.json`. Runtime settings such as thread count remain separate from model input resolution.
+Both engines implement the same C++ `InferenceEngine` result contract. Detection boxes, class scores, segmentation masks, and timing therefore continue into the same workbench, tracker, crop scheduler, multi-view grader, and benchmark endpoints.
 
-## References
+## Capability and import contract
 
-- [Tencent NCNN](https://github.com/Tencent/ncnn) documents its native ARM NEON, multi-core, INT8, packing, and low-memory runtime features.
-- [NCNN build guidance](https://github.com/Tencent/ncnn/wiki/how-to-build) covers Raspberry Pi builds and Vulkan's experimental nature on Pi hardware.
-- [Ultralytics NCNN export](https://docs.ultralytics.com/integrations/ncnn) documents embedded/Raspberry Pi deployment and the `.param`/`.bin` export path.
-- [ONNX Runtime threading](https://onnxruntime.ai/docs/performance/tune-performance/threading.html) documents sequential execution, graph optimization, and intra-op thread tuning for the alternative ONNX path.
-- [Raspberry Pi OS](https://www.raspberrypi.com/documentation/computers/os.html) recommends the 64-bit edition for Pi 4-class hardware and compute-heavy tasks.
+The private service reports installed modules and execution providers through `/health`; the C++ API merges those with native NCNN support in `/api/capabilities`. The frontend derives its accepted file extensions from that response.
+
+Direct artifacts use generated schema-version-3 metadata. Import is transactional:
+
+1. copy into a temporary model directory;
+2. atomically move it into local storage;
+3. resolve the format and runtime;
+4. load and warm the artifact on the selected device;
+5. persist detected task, labels, format, runtime, and accelerator;
+6. remove the stored copy if validation fails.
+
+Directory-based exports are uploaded as ZIP archives. Extraction rejects absolute paths, parent traversal, more than 4,096 entries, and expanded content above 4 GB. The model service accepts paths only beneath its configured model root. Executable checkpoint formats require a trusted-source acknowledgement.
+
+Verified NCNN packages continue to use schema version 2, provenance hashes, precision flags, named blobs, and the original three-file import contract.
+
+## Process and concurrency model
+
+`run_windows.ps1` starts the model service first, waits for CUDA/runtime health, then starts the public C++ service. The model process is hidden, loopback-only, and stopped with the application. The C++ model store serializes inference across active and pipeline engines, so both native and delegated models preserve the pipeline’s detector-priority ordering.
+
+Persistent models and result state remain under `data/`, while logs from the private service are under `data/logs/`. Raspberry Pi services, ARM flags, sysfs telemetry, and Linux deployment files are intentionally absent.

@@ -1,0 +1,7 @@
+# Install PyTorch using the CUDA command recommended for the installed NVIDIA
+# driver first: https://pytorch.org/get-started/locally/
+ultralytics>=8.4,<9
+onnx>=1.17,<2
+# ORT 1.27+ PyPI wheels use CUDA 13. This laptop's tested PyTorch runtime is
+# CUDA 12.x, so stay on the CUDA 12 / cuDNN 9 release line.
+onnxruntime-gpu>=1.21,<1.27

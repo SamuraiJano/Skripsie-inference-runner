@@ -1,12 +1,17 @@
 {
-  "name": "pi-inference-runner",
-  "version": "0.1.0",
+  "name": "inference-runner-windows",
+  "version": "1.0.0",
   "private": true,
   "scripts": {
     "dev": "npm --prefix frontend run dev",
     "mock": "node tools/mock-api.mjs",
     "build": "npm --prefix frontend run build",
-    "check": "npm --prefix frontend run check"
+    "check": "npm --prefix frontend run check",
+    "setup:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup_windows.ps1 -InstallModelRuntimes",
+    "setup:tensorrt": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup_windows.ps1 -InstallModelRuntimes -InstallTensorRT",
+    "build:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_windows.ps1",
+    "start:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_windows.ps1",
+    "status:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/status_windows.ps1",
+    "test:formats": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test_model_formats.ps1"
   }
 }
-

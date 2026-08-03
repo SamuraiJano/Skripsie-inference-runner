@@ -16,8 +16,11 @@ using json = nlohmann::json;
 enum class ModelTask {
     Classification,
     YoloDetect,
+    YoloSegment,
     Raw,
 };
+
+enum class ModelPrecision { FP32, FP16, INT8 };
 
 struct ModelConfig {
     std::string id;
@@ -30,15 +33,48 @@ struct ModelConfig {
     std::array<float, 3> mean = {0.0F, 0.0F, 0.0F};
     std::array<float, 3> norm = {1.0F / 255.0F, 1.0F / 255.0F, 1.0F / 255.0F};
     std::vector<std::string> labels;
-    int threads = 4;
+    int threads = 8;
+    bool use_vulkan_compute = true;
+    int gpu_device = -1;
     int top_k = 5;
     int max_detections = 300;
     bool apply_softmax = false;
+    ModelPrecision precision = ModelPrecision::FP32;
+    std::string framework;
+    std::string format = "ncnn";
+    std::string artifact_file;
+    std::string backend = "ncnn";
+    std::string accelerator = "Vulkan";
+    bool trusted_checkpoint = false;
+    std::string checkpoint_sha256;
+    std::string dataset_hash;
+    std::string split_hash;
+    std::string class_schema_hash;
+    std::string exporter_name;
+    std::string exporter_version;
+    std::string runtime_name;
+    std::string runtime_version;
+    std::string calibration_id;
+    bool artifact_verified = false;
+    bool artifact_quantized = false;
+    bool use_int8_inference = false;
+    bool use_int8_storage = false;
+    bool use_fp16_storage = false;
+    bool use_fp16_arithmetic = false;
+    float mask_threshold = 0.5F;
+    int schema_version = 2;
+    bool legacy_unverified = false;
     std::string created_at;
 
-    static ModelConfig from_json(const json& value);
+    static ModelConfig from_json(const json& value, bool allow_legacy = false);
     json to_json() const;
     json to_public_json(bool active, std::uintmax_t size_bytes) const;
+};
+
+struct MaskRle {
+    int width = 0;
+    int height = 0;
+    std::vector<std::uint32_t> counts;
 };
 
 struct Detection {
@@ -49,6 +85,8 @@ struct Detection {
     float y = 0.0F;
     float width = 0.0F;
     float height = 0.0F;
+    int track_id = -1;
+    MaskRle mask;
 };
 
 struct ClassificationScore {
@@ -68,8 +106,12 @@ struct Timing {
     double decode_ms = 0.0;
     double preprocess_ms = 0.0;
     double inference_ms = 0.0;
-    double postprocess_ms = 0.0;
-    double total_ms = 0.0;
+    double detection_nms_ms = 0.0;
+    double mask_reconstruction_ms = 0.0;
+    double tracking_ms = 0.0;
+    double queue_wait_ms = 0.0;
+    double grading_ms = 0.0;
+    double backend_total_ms = 0.0;
 };
 
 struct InferenceResult {
@@ -82,13 +124,14 @@ struct InferenceResult {
     std::vector<RawTensor> tensors;
     Timing timing;
 
+    static InferenceResult from_json(const json& value);
     json to_json() const;
 };
 
 std::string task_name(ModelTask task);
+std::string precision_name(ModelPrecision precision);
 std::string utc_now_iso8601();
 std::string make_model_id(const std::string& name);
 void validate_model_config(const ModelConfig& config);
 
 }  // namespace runner
-

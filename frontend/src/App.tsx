@@ -2,11 +2,12 @@ import { AlertTriangle, Box, Code2, Cpu, Layers3, Plus, RefreshCw, X } from 'luc
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api, errorMessage } from './api'
 import { InferenceWorkbench } from './components/InferenceWorkbench'
+import { LiveConveyor } from './components/LiveConveyor'
 import { ModelForm } from './components/ModelForm'
 import { ModelLibrary } from './components/ModelLibrary'
 import { RuntimePanel } from './components/RuntimePanel'
 import { StatusPill } from './components/StatusPill'
-import type { ModelManifestDraft, RuntimeHealth, StoredModel } from './types'
+import type { DirectModelDraft, ModelManifestDraft, RuntimeHealth, StoredModel } from './types'
 
 function App() {
   const [health, setHealth] = useState<RuntimeHealth | null>(null)
@@ -52,6 +53,20 @@ function App() {
     }
   }
 
+  async function addArtifact(draft: DirectModelDraft, model: File) {
+    setImporting(true)
+    try {
+      const imported = await api.addArtifact(draft, model)
+      setFormOpen(false)
+      await refresh(true)
+      setNotice(`${imported.name} was validated and imported successfully.`)
+    } catch (error) {
+      setNotice(errorMessage(error))
+    } finally {
+      setImporting(false)
+    }
+  }
+
   async function activateModel(id: string) {
     setBusyModelId(id)
     try {
@@ -78,9 +93,9 @@ function App() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <a className="brand" href="/" aria-label="Edge Runner home">
+        <a className="brand" href="/" aria-label="Inference Runner Windows home">
           <span className="brand-mark"><Cpu size={19} /></span>
-          <span><strong>EDGE</strong> RUNNER</span>
+          <span><strong>INFERENCE</strong> RUNNER</span>
         </a>
         <div className="topbar-actions">
           <StatusPill state={status} />
@@ -91,13 +106,13 @@ function App() {
       <main>
         <section className="hero">
           <div>
-            <span className="eyebrow hero-eyebrow">Raspberry Pi 4 · local inference</span>
-            <h1>Load once.<br /><em>Infer at the edge.</em></h1>
-            <p>Run optimized NCNN models on-device with a native C++ hot path and a small React control surface.</p>
+            <span className="eyebrow hero-eyebrow">Windows · RTX GPU inference</span>
+            <h1>Load once.<br /><em>Run on the RTX.</em></h1>
+            <p>Load compatible model formats through the best runtime available on this laptop, including PyTorch CUDA and native NCNN Vulkan.</p>
           </div>
           <div className="hero-actions">
             <button className="button primary" onClick={() => setFormOpen(true)}><Plus size={17} /> Add model</button>
-            <span><span className="live-dot" /> No cloud. No Python runtime.</span>
+            <span><span className="live-dot" /> Local execution. Automatic backend selection.</span>
           </div>
         </section>
 
@@ -112,6 +127,7 @@ function App() {
           <ModelLibrary models={models} busyModelId={busyModelId} onActivate={activateModel} onDelete={deleteModel} onAdd={() => setFormOpen(true)} />
           <InferenceWorkbench activeModel={activeModel} online={Boolean(health)} onError={setNotice} />
           <RuntimePanel health={health} activeModel={activeModel} />
+          <LiveConveyor online={Boolean(health)} onError={setNotice} />
         </div>
 
         <section className="architecture-strip" aria-label="Application architecture">
@@ -119,16 +135,23 @@ function App() {
           <i />
           <div><span>02</span><Layers3 size={18} /><p><strong>C++ service</strong>Decode, queue, preprocess</p></div>
           <i />
-          <div><span>03</span><Cpu size={18} /><p><strong>NCNN / ARM</strong>NEON + INT8-ready compute</p></div>
+          <div><span>03</span><Cpu size={18} /><p><strong>CUDA / Vulkan</strong>Format-aware GPU inference</p></div>
         </section>
       </main>
 
       <footer>
-        <span>Edge Runner 0.1 · built for aarch64</span>
-        <a href="https://github.com/Tencent/ncnn" target="_blank" rel="noreferrer"><Code2 size={14} /> NCNN runtime</a>
+        <span>Inference Runner Windows 1.0 · built for x86-64</span>
+        <a href="https://docs.ultralytics.com/modes/predict/" target="_blank" rel="noreferrer"><Code2 size={14} /> Supported formats</a>
       </footer>
 
-      <ModelForm open={formOpen} submitting={importing} onClose={() => setFormOpen(false)} onSubmit={addModel} />
+      <ModelForm
+        open={formOpen}
+        submitting={importing}
+        formats={health?.formats ?? []}
+        onClose={() => setFormOpen(false)}
+        onSubmitArtifact={addArtifact}
+        onSubmitNcnn={addModel}
+      />
 
       {notice && (
         <div className="toast" role="alert">

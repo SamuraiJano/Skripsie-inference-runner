@@ -26,13 +26,13 @@ export function RuntimePanel({ health, activeModel }: Props) {
       <div className="runtime-grid">
         <div className="runtime-stat">
           <Cpu size={17} />
-          <span>Architecture</span>
-          <strong>{health?.architecture ?? 'Unavailable'}</strong>
+          <span>GPU device</span>
+          <strong>{health?.gpuDevice ?? 'Unavailable'}</strong>
         </div>
         <div className="runtime-stat">
           <Gauge size={17} />
-          <span>CPU workers</span>
-          <strong>{activeModel?.threads ?? health?.recommendedThreads ?? '—'} / {health?.logicalCores ?? '—'}</strong>
+          <span>Vulkan device</span>
+          <strong>{health ? `${health.gpuDeviceIndex} / ${health.gpuCount}` : '—'}</strong>
         </div>
         <div className="runtime-stat">
           <Server size={17} />
@@ -49,11 +49,12 @@ export function RuntimePanel({ health, activeModel }: Props) {
       <div className="runtime-note">
         <span className="note-dot" />
         <p>
-          <strong>Pi 4 profile</strong>
-          One active model, one inference request, ARM NEON packing, CPU-only NCNN.
+          <strong>Windows GPU profile</strong>
+          {activeModel
+            ? `${activeModel.format.toUpperCase()} / ${activeModel.precision.toUpperCase()} through ${activeModel.backend} (${activeModel.accelerator}).`
+            : `${health?.formats.filter((format) => format.available).length ?? 0} model formats are ready on this laptop.`}
         </p>
       </div>
     </section>
   )
 }
-

@@ -1,4 +1,4 @@
-import type { InferenceResult, ModelManifestDraft, RuntimeHealth, StoredModel } from './types'
+import type { DirectModelDraft, InferenceResult, ModelManifestDraft, PipelineConfig, PipelineSnapshot, RuntimeHealth, StoredModel } from './types'
 
 class ApiError extends Error {
   constructor(
@@ -33,15 +33,38 @@ export const api = {
     body.append('bin', binFile)
     return request<StoredModel>('/api/models', { method: 'POST', body })
   },
+  addArtifact: (draft: DirectModelDraft, modelFile: File) => {
+    const body = new FormData()
+    body.append('model', modelFile)
+    body.append('name', draft.name)
+    body.append('task', draft.task)
+    body.append('precision', draft.precision)
+    body.append('trustedCheckpoint', String(draft.trustedCheckpoint))
+    body.append('inputWidth', String(draft.inputWidth))
+    body.append('inputHeight', String(draft.inputHeight))
+    return request<StoredModel>('/api/models', { method: 'POST', body })
+  },
   activateModel: (id: string) => request<StoredModel>(`/api/models/${encodeURIComponent(id)}/activate`, { method: 'POST' }),
   deleteModel: (id: string) => request<{ deleted: string }>(`/api/models/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  infer: (modelId: string, image: File, confidence: number, iou: number) => {
+  infer: async (modelId: string, image: File, confidence: number, iou: number) => {
     const body = new FormData()
     body.append('modelId', modelId)
     body.append('confidence', String(confidence))
     body.append('iou', String(iou))
     body.append('image', image)
-    return request<InferenceResult>('/api/infer', { method: 'POST', body })
+    const started = performance.now()
+    const result = await request<InferenceResult>('/api/infer', { method: 'POST', body })
+    result.clientHttpRoundTripMs = performance.now() - started
+    return result
+  },
+  pipeline: () => request<PipelineSnapshot>('/api/pipeline'),
+  pipelineConfig: () => request<PipelineConfig>('/api/pipeline/config'),
+  resetPipeline: () => request<PipelineSnapshot>('/api/pipeline/reset', { method: 'POST' }),
+  pipelineFrame: (image: Blob, frameId: number) => {
+    const body = new FormData()
+    body.append('frameId', String(frameId))
+    body.append('image', image, `frame-${frameId}.jpg`)
+    return request<PipelineSnapshot>('/api/pipeline/frame', { method: 'POST', body })
   },
 }
 

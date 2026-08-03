@@ -4,6 +4,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -19,9 +20,28 @@ public:
 
     nlohmann::json list() const;
     nlohmann::json import_model(const nlohmann::json& manifest, const std::string& param, const std::string& bin);
+    nlohmann::json import_artifact(
+        const std::string& name,
+        const std::string& task,
+        const std::string& precision,
+        const std::string& filename,
+        const std::string& artifact,
+        bool trusted_checkpoint,
+        int input_width,
+        int input_height
+    );
     nlohmann::json activate(const std::string& id);
     void remove(const std::string& id);
     InferenceResult infer(const std::string& requested_model_id, const std::vector<unsigned char>& image, float confidence, float iou);
+    InferenceResult infer_pipeline_model(const std::string& model_id, const std::vector<unsigned char>& image, float confidence, float iou);
+    nlohmann::json benchmark(
+        const std::string& requested_model_id,
+        const std::vector<unsigned char>& image,
+        float confidence,
+        float iou,
+        int warmup,
+        int count
+    );
     std::string active_model_id() const;
 
 private:
@@ -35,6 +55,7 @@ private:
     std::vector<Record> records_;
     std::string active_id_;
     std::shared_ptr<InferenceEngine> active_engine_;
+    std::unordered_map<std::string, std::shared_ptr<InferenceEngine>> pipeline_engines_;
     mutable std::mutex state_mutex_;
     std::mutex inference_mutex_;
 
@@ -46,4 +67,3 @@ private:
 };
 
 }  // namespace runner
-

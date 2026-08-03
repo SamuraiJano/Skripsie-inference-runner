@@ -1,6 +1,15 @@
 {
-  "name": "Naartjie detector",
-  "task": "yolo-detect",
+  "schemaVersion": 2,
+  "name": "Naartjie YOLO26n segmenter FP16",
+  "task": "yolo-segment",
+  "precision": "fp16",
+  "framework": "ncnn",
+  "checkpointSha256": "1111111111111111111111111111111111111111111111111111111111111111",
+  "datasetHash": "2222222222222222222222222222222222222222222222222222222222222222",
+  "splitHash": "3333333333333333333333333333333333333333333333333333333333333333",
+  "classSchemaHash": "4444444444444444444444444444444444444444444444444444444444444444",
+  "exporter": { "name": "ultralytics", "version": "8.4.95" },
+  "calibrationId": null,
   "input": {
     "width": 640,
     "height": 640,
@@ -8,15 +17,21 @@
     "mean": [0.0, 0.0, 0.0],
     "norm": [0.0039215686, 0.0039215686, 0.0039215686]
   },
-  "outputs": ["out0"],
-  "labels": ["healthy", "blemish", "rot"],
+  "outputs": ["out0", "out1"],
+  "labels": ["class_1", "class_2", "class_3"],
   "runtime": {
-    "threads": 4
+    "name": "ncnn",
+    "version": "1.0.20260526",
+    "threads": 8,
+    "useVulkanCompute": true,
+    "gpuDevice": 0,
+    "useInt8Inference": false,
+    "useInt8Storage": false,
+    "useFp16Storage": true,
+    "useFp16Arithmetic": true
   },
-  "classification": {
-    "applySoftmax": false,
-    "topK": 5
-  },
-  "maxDetections": 300
+  "artifactVerification": { "verified": true, "quantized": false },
+  "classification": { "applySoftmax": false, "topK": 5 },
+  "maxDetections": 300,
+  "maskThreshold": 0.5
 }
-

@@ -1,6 +1,6 @@
 import { Box, Check, Cpu, MoreVertical, Play, Plus, Trash2 } from 'lucide-react'
-import { useState } from 'react'
-import type { StoredModel } from '../types'
+import { useMemo, useState } from 'react'
+import type { ModelPrecision, StoredModel } from '../types'
 
 interface Props {
   models: StoredModel[]
@@ -10,6 +10,8 @@ interface Props {
   onAdd: () => void
 }
 
+type PrecisionFilter = 'all' | ModelPrecision
+
 function formatBytes(bytes: number) {
   if (bytes <= 0) return '—'
   const mb = bytes / (1024 * 1024)
@@ -18,6 +20,11 @@ function formatBytes(bytes: number) {
 
 export function ModelLibrary({ models, busyModelId, onActivate, onDelete, onAdd }: Props) {
   const [menuId, setMenuId] = useState<string | null>(null)
+  const [precision, setPrecision] = useState<PrecisionFilter>('all')
+  const visibleModels = useMemo(
+    () => precision === 'all' ? models : models.filter((model) => model.precision === precision),
+    [models, precision],
+  )
 
   return (
     <section className="panel model-library" aria-labelledby="model-library-title">
@@ -26,21 +33,39 @@ export function ModelLibrary({ models, busyModelId, onActivate, onDelete, onAdd 
           <span className="eyebrow">Local storage</span>
           <h2 id="model-library-title">Model library</h2>
         </div>
-        <button className="icon-button" onClick={onAdd} aria-label="Add a model" data-testid="open-model-form">
-          <Plus size={18} />
-        </button>
+        <div className="library-actions">
+          <select
+            value={precision}
+            onChange={(event) => setPrecision(event.target.value as PrecisionFilter)}
+            aria-label="Filter models by precision"
+          >
+            <option value="all">All precision</option>
+            <option value="fp32">FP32</option>
+            <option value="fp16">FP16</option>
+            <option value="int8">INT8</option>
+          </select>
+          <button className="icon-button" onClick={onAdd} aria-label="Add a model" data-testid="open-model-form">
+            <Plus size={18} />
+          </button>
+        </div>
       </div>
 
       {models.length === 0 ? (
         <div className="empty-state compact">
           <Box size={24} />
           <strong>No models stored</strong>
-          <span>Add an NCNN .param and .bin pair.</span>
+          <span>Add a compatible model file or a verified NCNN package.</span>
           <button className="text-button" onClick={onAdd}>Add first model</button>
+        </div>
+      ) : visibleModels.length === 0 ? (
+        <div className="empty-state compact">
+          <Box size={24} />
+          <strong>No {precision.toUpperCase()} models</strong>
+          <span>Choose another precision filter or import a verified artifact.</span>
         </div>
       ) : (
         <div className="model-list">
-          {models.map((model) => (
+          {visibleModels.map((model) => (
             <article className={`model-card ${model.active ? 'active' : ''}`} key={model.id}>
               <div className="model-icon"><Cpu size={18} /></div>
               <div className="model-copy">
@@ -48,8 +73,9 @@ export function ModelLibrary({ models, busyModelId, onActivate, onDelete, onAdd 
                   <strong title={model.name}>{model.name}</strong>
                   {model.active && <span className="active-badge"><Check size={11} /> active</span>}
                 </div>
-                <span>{model.task.replace('-', ' ')} · {model.inputWidth}×{model.inputHeight}</span>
-                <span>{formatBytes(model.sizeBytes)} · {model.threads} threads</span>
+                <span>{model.task.replace('-', ' ')} · {model.precision.toUpperCase()} · {model.inputWidth}×{model.inputHeight}</span>
+                <span>{model.format.toUpperCase()} · {model.accelerator} · {formatBytes(model.sizeBytes)}</span>
+                <span title={model.backend}>{model.backend} runtime · {model.threads} helper threads</span>
               </div>
               <div className="model-actions">
                 {!model.active && (
@@ -85,4 +111,3 @@ export function ModelLibrary({ models, busyModelId, onActivate, onDelete, onAdd 
     </section>
   )
 }
-

@@ -3,7 +3,6 @@ import { CircleAlert, CircleCheck, LoaderCircle } from 'lucide-react'
 interface Props {
   state: 'online' | 'offline' | 'loading'
 }
-
 export function StatusPill({ state }: Props) {
   const Icon = state === 'online' ? CircleCheck : state === 'offline' ? CircleAlert : LoaderCircle
   const label = state === 'online' ? 'Runtime online' : state === 'offline' ? 'Runtime offline' : 'Connecting'
@@ -15,4 +14,3 @@ export function StatusPill({ state }: Props) {
     </span>
   )
 }
-
