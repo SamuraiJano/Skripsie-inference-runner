@@ -4,8 +4,8 @@ import { randomUUID } from 'node:crypto'
 const startedAt = Date.now()
 const models = [{
   id: 'demo-yolo-model',
-  name: 'Demo YOLO segmenter',
-  task: 'yolo-segment',
+  name: 'Demo YOLO detector',
+  task: 'yolo-detect',
   precision: 'fp16',
   framework: 'ncnn',
   format: 'ncnn',
@@ -15,7 +15,7 @@ const models = [{
   inputWidth: 640,
   inputHeight: 640,
   inputBlob: 'in0',
-  outputBlobs: ['out0', 'out1'],
+  outputBlobs: ['out0'],
   threads: 8,
   labels: ['class_1', 'class_2', 'class_3'],
   checkpointSha256: '1'.repeat(64),
@@ -81,25 +81,6 @@ function pipelineSnapshot() {
     queueSize: Math.max(0, views - 2), droppedSegmentationJobs: 0, detectorFps: 7.8,
     segmentationLatencyMs: views ? 84.2 : 0, classificationLatencyMs: classified ? 780 : 0, config: pipelineConfig,
   }
-}
-
-function rectangleRle(width, height, left, top, boxWidth, boxHeight) {
-  const counts = []
-  let foreground = false
-  let count = 0
-  for (let index = 0; index < width * height; index += 1) {
-    const x = index % width
-    const y = Math.floor(index / width)
-    const next = x >= left && x < left + boxWidth && y >= top && y < top + boxHeight
-    if (next === foreground) count += 1
-    else {
-      counts.push(count)
-      count = 1
-      foreground = next
-    }
-  }
-  counts.push(count)
-  return { encoding: 'rle-row-major', width, height, counts }
 }
 
 function json(response, status, value) {
@@ -184,8 +165,8 @@ const server = createServer(async (request, response) => {
         sourceWidth: 1280,
         sourceHeight: 720,
         detections: [
-          { classId: 0, label: 'class_1', confidence: 0.93, x: 126, y: 94, width: 390, height: 430, trackId: null, mask: rectangleRle(1280, 720, 160, 120, 320, 360) },
-          { classId: 1, label: 'class_2', confidence: 0.78, x: 710, y: 205, width: 260, height: 285, trackId: null, mask: rectangleRle(1280, 720, 735, 230, 210, 235) },
+          { classId: 0, label: 'class_1', confidence: 0.93, x: 126, y: 94, width: 390, height: 430, trackId: null, mask: null },
+          { classId: 1, label: 'class_2', confidence: 0.78, x: 710, y: 205, width: 260, height: 285, trackId: null, mask: null },
         ],
         classifications: [], tensors: [],
         timing: {

@@ -111,6 +111,12 @@ Use `gpuDevice: -1` to let NCNN choose its highest-scoring Vulkan device. On thi
 
 The complete NCNN example is in `config/model-manifest.example.json`. Every imported artifact is copied into `data/models`, loaded, and warmed before being admitted to the model library. The active model ID is persisted in `data/models/active-model.txt`.
 
+## Video object detection
+
+Open the **Video detection** screen from the top navigation, choose a local video, select an installed object-detection model, and click **Run detection**. Only models imported with the object-detection task appear on this screen. The browser decodes the video and submits one frame at a time, so requests cannot build up when model inference is slower than video playback.
+
+The screen accepts any video format that Microsoft Edge can decode. The selected model can use any compatible artifact format listed above; backend and GPU selection remain automatic.
+
 ## Live conveyor pipeline
 
 Copy the example before changing deployment values:

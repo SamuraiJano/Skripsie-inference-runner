@@ -9,7 +9,7 @@ interface Props {
   onError: (message: string) => void
 }
 
-const boxColors = ['#b8f26a', '#ffb84d', '#66d9ff', '#dca6ff', '#ff7f88']
+export const boxColors = ['#b8f26a', '#ffb84d', '#66d9ff', '#dca6ff', '#ff7f88']
 
 function MaskOverlay({ result }: { result: InferenceResult }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -49,13 +49,13 @@ function MaskOverlay({ result }: { result: InferenceResult }) {
     context.putImageData(new ImageData(pixels, result.sourceWidth, result.sourceHeight), 0, 0)
   }, [result])
 
-  return <canvas className="mask-overlay" ref={canvasRef} width={result.sourceWidth} height={result.sourceHeight} aria-hidden="true" />
+  return <canvas className="mask-overlay" ref={canvasRef} width={result.sourceWidth} height={result.sourceHeight} data-testid="mask-overlay" aria-hidden="true" />
 }
 
-function DetectionOverlay({ detections, width, height }: { detections: Detection[]; width: number; height: number }) {
+export function DetectionOverlay({ detections, width, height }: { detections: Detection[]; width: number; height: number }) {
   const strokeWidth = Math.max(1.5, width / 360)
   return (
-    <svg className="detection-overlay" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+    <svg className="detection-overlay" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="xMidYMid meet" data-testid="detection-overlay" aria-hidden="true">
       {detections.map((detection, index) => {
         const color = boxColors[detection.classId % boxColors.length]
         return (
@@ -180,8 +180,8 @@ export function InferenceWorkbench({ activeModel, online, onError }: Props) {
           <input type="file" accept="image/jpeg,image/png,image/webp" onChange={onFileChange} />
         </label>
       ) : (
-        <div className="preview-stage">
-          <img src={previewUrl} alt="Selected inference input" />
+        <div className="preview-stage" data-testid="image-preview-stage">
+          <img src={previewUrl} alt="Selected inference input" data-testid="inference-source-image" />
           {result && <MaskOverlay result={result} />}
           {result && <DetectionOverlay detections={result.detections} width={result.sourceWidth} height={result.sourceHeight} />}
           {running && <div className="inference-overlay"><ScanLine size={34} /><strong>Running on device</strong></div>}

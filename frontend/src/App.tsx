@@ -1,4 +1,4 @@
-import { AlertTriangle, Box, Code2, Cpu, Layers3, Plus, RefreshCw, X } from 'lucide-react'
+import { AlertTriangle, Box, Code2, Cpu, Film, Layers3, Plus, RefreshCw, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api, errorMessage } from './api'
 import { InferenceWorkbench } from './components/InferenceWorkbench'
@@ -7,7 +7,14 @@ import { ModelForm } from './components/ModelForm'
 import { ModelLibrary } from './components/ModelLibrary'
 import { RuntimePanel } from './components/RuntimePanel'
 import { StatusPill } from './components/StatusPill'
+import { VideoDetection } from './components/VideoDetection'
 import type { DirectModelDraft, ModelManifestDraft, RuntimeHealth, StoredModel } from './types'
+
+type AppScreen = 'dashboard' | 'video'
+
+function screenFromHash(): AppScreen {
+  return window.location.hash === '#/video' ? 'video' : 'dashboard'
+}
 
 function App() {
   const [health, setHealth] = useState<RuntimeHealth | null>(null)
@@ -17,6 +24,7 @@ function App() {
   const [importing, setImporting] = useState(false)
   const [busyModelId, setBusyModelId] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [screen, setScreen] = useState<AppScreen>(screenFromHash)
 
   const activeModel = useMemo(() => models.find((model) => model.active), [models])
 
@@ -38,6 +46,12 @@ function App() {
     const timer = window.setInterval(() => void refresh(true), 5000)
     return () => window.clearInterval(timer)
   }, [refresh])
+
+  useEffect(() => {
+    const syncScreen = () => setScreen(screenFromHash())
+    window.addEventListener('hashchange', syncScreen)
+    return () => window.removeEventListener('hashchange', syncScreen)
+  }, [])
 
   async function addModel(manifest: ModelManifestDraft, param: File, bin: File) {
     setImporting(true)
@@ -93,10 +107,16 @@ function App() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <a className="brand" href="/" aria-label="Inference Runner Windows home">
-          <span className="brand-mark"><Cpu size={19} /></span>
-          <span><strong>INFERENCE</strong> RUNNER</span>
-        </a>
+        <div className="topbar-primary">
+          <a className="brand" href="#/" aria-label="Inference Runner Windows home">
+            <span className="brand-mark"><Cpu size={19} /></span>
+            <span><strong>INFERENCE</strong> RUNNER</span>
+          </a>
+          <nav className="screen-nav" aria-label="Inference screens">
+            <a href="#/" className={screen === 'dashboard' ? 'active' : ''} aria-current={screen === 'dashboard' ? 'page' : undefined}><Box size={14} /><span>Dashboard</span></a>
+            <a href="#/video" className={screen === 'video' ? 'active' : ''} aria-current={screen === 'video' ? 'page' : undefined}><Film size={14} /><span>Video detection</span></a>
+          </nav>
+        </div>
         <div className="topbar-actions">
           <StatusPill state={status} />
           <button className="icon-button" onClick={() => void refresh()} aria-label="Refresh runtime"><RefreshCw size={17} /></button>
@@ -107,11 +127,20 @@ function App() {
         <section className="hero">
           <div>
             <span className="eyebrow hero-eyebrow">Windows · RTX GPU inference</span>
-            <h1>Load once.<br /><em>Run on the RTX.</em></h1>
-            <p>Load compatible model formats through the best runtime available on this laptop, including PyTorch CUDA and native NCNN Vulkan.</p>
+            {screen === 'dashboard' ? (
+              <>
+                <h1>Load once.<br /><em>Run on the RTX.</em></h1>
+                <p>Load compatible model formats through the best runtime available on this laptop, including PyTorch CUDA and native NCNN Vulkan.</p>
+              </>
+            ) : (
+              <>
+                <h1>Video in.<br /><em>Detections out.</em></h1>
+                <p>Run a dedicated object-detection model over a local video with sequential, GPU-backed frame inference and live overlays.</p>
+              </>
+            )}
           </div>
           <div className="hero-actions">
-            <button className="button primary" onClick={() => setFormOpen(true)}><Plus size={17} /> Add model</button>
+            {screen === 'dashboard' && <button className="button primary" onClick={() => setFormOpen(true)}><Plus size={17} /> Add model</button>}
             <span><span className="live-dot" /> Local execution. Automatic backend selection.</span>
           </div>
         </section>
@@ -123,20 +152,26 @@ function App() {
           </section>
         )}
 
-        <div className="dashboard-grid">
-          <ModelLibrary models={models} busyModelId={busyModelId} onActivate={activateModel} onDelete={deleteModel} onAdd={() => setFormOpen(true)} />
-          <InferenceWorkbench activeModel={activeModel} online={Boolean(health)} onError={setNotice} />
-          <RuntimePanel health={health} activeModel={activeModel} />
-          <LiveConveyor online={Boolean(health)} onError={setNotice} />
-        </div>
+        {screen === 'dashboard' ? (
+          <>
+            <div className="dashboard-grid">
+              <ModelLibrary models={models} busyModelId={busyModelId} onActivate={activateModel} onDelete={deleteModel} onAdd={() => setFormOpen(true)} />
+              <InferenceWorkbench activeModel={activeModel} online={Boolean(health)} onError={setNotice} />
+              <RuntimePanel health={health} activeModel={activeModel} />
+              <LiveConveyor online={Boolean(health)} onError={setNotice} />
+            </div>
 
-        <section className="architecture-strip" aria-label="Application architecture">
-          <div><span>01</span><Box size={18} /><p><strong>React UI</strong>Upload and inspect locally</p></div>
-          <i />
-          <div><span>02</span><Layers3 size={18} /><p><strong>C++ service</strong>Decode, queue, preprocess</p></div>
-          <i />
-          <div><span>03</span><Cpu size={18} /><p><strong>CUDA / Vulkan</strong>Format-aware GPU inference</p></div>
-        </section>
+            <section className="architecture-strip" aria-label="Application architecture">
+              <div><span>01</span><Box size={18} /><p><strong>React UI</strong>Upload and inspect locally</p></div>
+              <i />
+              <div><span>02</span><Layers3 size={18} /><p><strong>C++ service</strong>Decode, queue, preprocess</p></div>
+              <i />
+              <div><span>03</span><Cpu size={18} /><p><strong>CUDA / Vulkan</strong>Format-aware GPU inference</p></div>
+            </section>
+          </>
+        ) : (
+          <VideoDetection models={models} online={Boolean(health)} onError={setNotice} />
+        )}
       </main>
 
       <footer>

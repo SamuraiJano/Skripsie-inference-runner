@@ -46,12 +46,12 @@ export const api = {
   },
   activateModel: (id: string) => request<StoredModel>(`/api/models/${encodeURIComponent(id)}/activate`, { method: 'POST' }),
   deleteModel: (id: string) => request<{ deleted: string }>(`/api/models/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  infer: async (modelId: string, image: File, confidence: number, iou: number) => {
+  infer: async (modelId: string, image: Blob, confidence: number, iou: number) => {
     const body = new FormData()
     body.append('modelId', modelId)
     body.append('confidence', String(confidence))
     body.append('iou', String(iou))
-    body.append('image', image)
+    body.append('image', image, image instanceof File ? image.name : 'video-frame.jpg')
     const started = performance.now()
     const result = await request<InferenceResult>('/api/infer', { method: 'POST', body })
     result.clientHttpRoundTripMs = performance.now() - started
