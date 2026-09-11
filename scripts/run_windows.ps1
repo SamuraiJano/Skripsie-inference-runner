@@ -15,9 +15,13 @@ $ErrorActionPreference = "Stop"
 $rootDir = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 $executable = Join-Path $rootDir "build\windows\Release\inference_runner_windows.exe"
 $dataDir = Join-Path $rootDir "data\models"
+$modelsDir = Join-Path $rootDir "models"
 $frontendDir = Join-Path $rootDir "frontend\dist"
 $pipelineConfig = Join-Path $rootDir "config\pipeline.json"
 $modelService = Join-Path $rootDir "backend\python\model_service.py"
+$locateAnythingRoot = Join-Path $rootDir ".deps\src\locate-anything-bb860a7efa22bb40cd4bb77959512375b92db934"
+$locateAnythingModel = Join-Path $rootDir "models\LocateAnything-3B"
+$groundingDinoModel = Join-Path $rootDir "models\GroundingDINO-Tiny"
 $python = Join-Path $rootDir ".venv\Scripts\python.exe"
 if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
     $pythonCommand = Get-Command python.exe -ErrorAction SilentlyContinue
@@ -32,10 +36,15 @@ if (-not (Test-Path -LiteralPath $pipelineConfig -PathType Leaf)) {
 if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
     throw "The runner has not been built. Run npm run build:windows first."
 }
+$runnerHelp = (& $executable --help 2>&1) -join "`n"
+if ($LASTEXITCODE -ne 0 -or $runnerHelp -notmatch "(?m)^\s*--models\b") {
+    throw "The native runner is out of date and does not support automatic model discovery. Run npm run build:windows, then retry npm run start:windows."
+}
 if (-not (Test-Path -LiteralPath $frontendDir -PathType Container)) {
     throw "The frontend bundle is missing. Run npm run build:windows first."
 }
 New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
+New-Item -ItemType Directory -Path $modelsDir -Force | Out-Null
 $logDir = Join-Path $rootDir "data\logs"
 New-Item -ItemType Directory -Path $logDir -Force | Out-Null
 
@@ -49,6 +58,7 @@ $arguments = @(
     "--host", $HostAddress,
     "--port", $Port.ToString(),
     "--data", $dataDir,
+    "--models", $modelsDir,
     "--static", $frontendDir,
     "--pipeline-config", $pipelineConfig,
     "--python-backend", "http://127.0.0.1:$ModelServicePort"
@@ -77,7 +87,7 @@ if ($MaxPerformance) {
 
 Write-Host "Dashboard: http://$HostAddress`:$Port" -ForegroundColor Cyan
 Write-Host "Pipeline : $pipelineConfig"
-Write-Host "Models   : $dataDir"
+Write-Host "Models   : $modelsDir (automatic discovery)"
 Write-Host "Backends : NCNN/Vulkan + Ultralytics/CUDA"
 
 $quotedArguments = $arguments | ForEach-Object {
@@ -100,7 +110,11 @@ try {
         ('"' + $modelService + '"'),
         "--host", "127.0.0.1",
         "--port", $ModelServicePort.ToString(),
-        "--models-root", ('"' + $dataDir + '"')
+        "--models-root", ('"' + $modelsDir + '"'),
+        "--state-root", ('"' + $dataDir + '"'),
+        "--locate-anything-root", ('"' + $locateAnythingRoot + '"'),
+        "--locate-anything-model", ('"' + $locateAnythingModel + '"'),
+        "--grounding-dino-model", ('"' + $groundingDinoModel + '"')
     )
     $modelProcess = Start-Process -FilePath $python -ArgumentList $modelArguments -WorkingDirectory $rootDir -WindowStyle Hidden `
         -RedirectStandardOutput (Join-Path $logDir "model-service.out.log") `

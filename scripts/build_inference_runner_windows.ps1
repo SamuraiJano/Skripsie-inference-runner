@@ -153,3 +153,4 @@ if (-not (Test-Path -LiteralPath $runnerExe -PathType Leaf)) {
 Write-Host ""
 Write-Host "Build complete: $runnerExe" -ForegroundColor Green
 Write-Host "Run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_windows.ps1"
+

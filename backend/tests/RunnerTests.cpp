@@ -72,7 +72,8 @@ void test_precision_flags() {
     expect_invalid(cpu_runtime);
     auto reordered_classes = manifest("fp16");
     reordered_classes["labels"] = {"class_2", "class_1", "class_3"};
-    expect_invalid(reordered_classes);
+    const auto general_segmentation = runner::ModelConfig::from_json(reordered_classes);
+    assert(general_segmentation.labels.front() == "class_2");
 }
 
 void test_direct_artifact_contract_and_delegated_result() {
@@ -110,6 +111,50 @@ void test_direct_artifact_contract_and_delegated_result() {
     assert(result.model_id == "direct-fixture" && result.detections.size() == 1);
     assert(result.detections.front().class_id == 2 && result.detections.front().mask.counts.size() == 3);
     assert(result.timing.inference_ms == 3.5 && result.timing.backend_total_ms == 4.0);
+
+    direct["task"] = "vision-grounding";
+    direct["precision"] = "bf16";
+    direct["framework"] = "locate-anything";
+    direct["artifact"] = {
+        {"format", "locate-anything"}, {"file", "model.locateanything.json"}, {"backend", "locate-anything"},
+        {"accelerator", "CUDA + CPU offload"}, {"trustedCheckpoint", true},
+    };
+    const auto grounding = runner::ModelConfig::from_json(direct);
+    assert(grounding.task == runner::ModelTask::VisionGrounding);
+    assert(grounding.precision == runner::ModelPrecision::BF16 && grounding.backend == "locate-anything");
+
+    direct["precision"] = "fp32";
+    direct["framework"] = "grounding-dino";
+    direct["artifact"] = {
+        {"format", "grounding-dino"}, {"file", "model.groundingdino.json"}, {"backend", "grounding-dino"},
+        {"accelerator", "CUDA"}, {"trustedCheckpoint", false},
+    };
+    const auto grounding_dino = runner::ModelConfig::from_json(direct);
+    assert(grounding_dino.task == runner::ModelTask::VisionGrounding);
+    assert(grounding_dino.precision == runner::ModelPrecision::FP32 && grounding_dino.backend == "grounding-dino");
+
+    direct["task"] = "yolo-detect";
+    direct["framework"] = "pytorch";
+    direct["artifact"] = {
+        {"format", "dfine"}, {"file", "model.pth"}, {"backend", "dfine"},
+        {"accelerator", "CUDA"}, {"trustedCheckpoint", true},
+    };
+    direct["labels"] = {"object"};
+    const auto dfine = runner::ModelConfig::from_json(direct);
+    assert(dfine.task == runner::ModelTask::YoloDetect && dfine.backend == "dfine");
+    assert(dfine.precision == runner::ModelPrecision::FP32 && dfine.trusted_checkpoint);
+
+    const runner::json grounded_result = {
+        {"modelId", "locate-anything"}, {"task", "vision-grounding"},
+        {"sourceWidth", 200}, {"sourceHeight", 100},
+        {"detections", runner::json::array()},
+        {"points", {{{"classId", 0}, {"label", "button"}, {"x", 150.0}, {"y", 25.0}}}},
+        {"classifications", runner::json::array()}, {"tensors", runner::json::array()},
+        {"answer", "<ref>button</ref><box><750><250></box>"},
+    };
+    const auto grounded = runner::InferenceResult::from_json(grounded_result);
+    assert(grounded.points.size() == 1 && grounded.points.front().label == "button");
+    assert(!grounded.answer.empty());
 }
 
 void test_deterministic_mask_decode() {
@@ -142,13 +187,36 @@ void test_deterministic_mask_decode() {
 }
 
 void test_bytetrack_and_grade_aggregation() {
-    runner::ByteTracker tracker(0.5F, 0.1F, 0.2F, 2);
+    runner::ByteTracker tracker(0.5F, 0.1F, 0.2F, 2, 0.7F);
     runner::Detection first{0, "fruit", 0.9F, 10.0F, 10.0F, 20.0F, 20.0F};
     auto frame_one = tracker.update(1, {first});
     assert(frame_one.size() == 1 && frame_one[0].track_id == 1);
     runner::Detection second{0, "fruit", 0.3F, 11.0F, 10.0F, 20.0F, 20.0F};
     auto frame_two = tracker.update(2, {second});
     assert(frame_two.size() == 1 && frame_two[0].track_id == 1);  // ByteTrack low-score second association
+    second.x = 12.0F;
+    auto frame_three = tracker.update(3, {second});
+    assert(frame_three.size() == 1 && frame_three[0].track_id == 1);  // intermittent low confidence keeps the ID
+    runner::Detection weak_new{0, "fruit", 0.6F, 80.0F, 80.0F, 10.0F, 10.0F};
+    assert(tracker.update(4, {weak_new}, {true}).empty());  // association threshold is not a creation threshold
+    runner::Detection gated_new{0, "fruit", 0.95F, 80.0F, 80.0F, 10.0F, 10.0F};
+    assert(tracker.update(5, {gated_new}, {false}).empty());
+
+    runner::ByteTracker predictive_tracker(0.5F, 0.1F, 0.2F, 5, 0.7F);
+    runner::Detection moving{0, "fruit", 0.9F, 10.0F, 10.0F, 20.0F, 20.0F};
+    (void)predictive_tracker.update(1, {moving});
+    moving.y = 20.0F;
+    (void)predictive_tracker.update(2, {moving});
+    moving.y = 30.0F;
+    (void)predictive_tracker.update(3, {moving});
+    const auto predicted = predictive_tracker.update(4, {}, {}, true);
+    assert(predicted.size() == 1 && predicted.front().track_id == 1);
+    assert(std::abs(predicted.front().y - 40.0F) < 0.001F);
+    assert(!predictive_tracker.observed_in_frame(1, 4));
+    moving.y = 50.0F;
+    const auto reacquired = predictive_tracker.update(5, {moving}, {}, true);
+    assert(reacquired.size() == 1 && reacquired.front().track_id == 1);
+    assert(predictive_tracker.observed_in_frame(1, 5));
 
     runner::EvidenceAggregator grading(3, 0.1F);
     assert(grading.add({1, 2, 0.8F, 1}).state == "uncertain/insufficient_evidence");
@@ -197,7 +265,7 @@ void test_pipeline_serializes_model_callbacks() {
 }
 
 runner::LiveFrame live_frame(std::uint64_t frame_id) {
-    return {frame_id, std::chrono::steady_clock::now(), runner::utc_now_iso8601(), 1000, 500, {1}, {1}};
+    return {frame_id, std::chrono::steady_clock::now(), runner::utc_now_iso8601(), 1000, 1000, {1}, {1}};
 }
 
 runner::PipelineConfig pipeline_config() {
@@ -228,7 +296,7 @@ std::unique_ptr<runner::MultiViewPipeline> simulated_pipeline(
         result.source_height = frame.height;
         if (frame.frame_id <= centers.size() && centers[static_cast<std::size_t>(frame.frame_id - 1)] >= 0.0) {
             const float center = static_cast<float>(centers[static_cast<std::size_t>(frame.frame_id - 1)]);
-            result.detections.push_back({0, "naartjie", 0.95F, center - 120.0F, 100.0F, 240.0F, 180.0F});
+            result.detections.push_back({0, "naartjie", 0.95F, 380.0F, center - 90.0F, 240.0F, 180.0F});
         }
         result.timing.backend_total_ms = 3.0;
         return result;
@@ -250,6 +318,34 @@ std::unique_ptr<runner::MultiViewPipeline> simulated_pipeline(
         [accept_crop = std::move(accept_crop)](const runner::LiveFrame& frame, const runner::CropBounds& bounds) {
             if (!accept_crop(frame.frame_id)) return runner::CropImage{};
             return runner::CropImage{{1, 2, 3}, bounds.width, bounds.height, 100.0};
+        }
+    );
+    pipeline->start();
+    return pipeline;
+}
+
+std::unique_ptr<runner::MultiViewPipeline> scripted_pipeline(
+    runner::PipelineConfig config,
+    std::vector<std::vector<runner::Detection>> frames
+) {
+    auto pipeline = std::make_unique<runner::MultiViewPipeline>(
+        config,
+        [frames = std::move(frames)](const runner::LiveFrame& frame) {
+            runner::InferenceResult result;
+            result.source_width = frame.width;
+            result.source_height = frame.height;
+            if (frame.frame_id <= frames.size()) result.detections = frames[static_cast<std::size_t>(frame.frame_id - 1)];
+            return result;
+        },
+        [](const runner::SegmentationJobV2& job) {
+            runner::SegmentationResult result;
+            result.predicted_class = job.view_id % 3;
+            result.confidence = 0.9F;
+            result.success = true;
+            return result;
+        },
+        [](const runner::LiveFrame&, const runner::CropBounds& bounds) {
+            return runner::CropImage{{1}, bounds.width, bounds.height, 100.0};
         }
     );
     pipeline->start();
@@ -283,6 +379,10 @@ void test_zone_progress_capture_and_crop_math() {
     captured[3] = true;
     assert(runner::next_capture_target(1.0, targets, captured) == std::nullopt);  // duplicate prevention
 
+    const runner::Detection exact{0, "fruit", 0.9F, 10.0F, 20.0F, 30.0F, 40.0F};
+    const auto exact_crop = runner::clamp_crop(exact, 0.0, 100, 100);
+    assert(exact_crop.x == 10 && exact_crop.y == 20 && exact_crop.width == 30 && exact_crop.height == 40);
+
     const runner::Detection edge{0, "fruit", 0.9F, -5.0F, 90.0F, 30.0F, 20.0F};
     const auto crop = runner::clamp_crop(edge, 0.2, 100, 100);
     assert(crop.x == 0 && crop.y == 86 && crop.width == 31 && crop.height == 14);
@@ -305,12 +405,12 @@ void test_worst_confident_class_aggregation() {
 }
 
 void test_routing_four_view_classification_and_no_duplicate() {
-    auto pipeline = simulated_pipeline(pipeline_config(), {230.0, 295.0, 360.0, 425.0, 490.0, 555.0, 620.0, 690.0, 760.0});
-    for (std::uint64_t frame = 1; frame <= 9; ++frame) (void)pipeline->process_frame(live_frame(frame));
+    auto pipeline = simulated_pipeline(pipeline_config(), {120.0, 200.0, 310.0, 375.0, 440.0, 505.0, 570.0, 635.0, 700.0, 840.0});
+    for (std::uint64_t frame = 1; frame <= 10; ++frame) (void)pipeline->process_frame(live_frame(frame));
     assert(!pipeline->route_segmentation_result({0, 999, 1, 0, {}, 0, 0, {}, 0, 0, false, "wrong track"}));
     const bool became_classified = wait_for([&] {
         const auto track = pipeline->track(1);
-        return track && track->state == runner::TrackState::Classified;
+        return track && track->state == runner::TrackState::Completed;
     });
     if (!became_classified) {
         const auto failed_track = pipeline->track(1);
@@ -325,31 +425,73 @@ void test_routing_four_view_classification_and_no_duplicate() {
     const auto classified = pipeline->track(1);
     assert(classified && classified->captured_views.size() == 4 && classified->views_used == 4);
     assert(classified->final_class == 2 && !classified->incomplete_evidence);
+    const std::string capture_id = classified->captured_views.front().capture_id;
+    assert(!capture_id.empty());
+    const auto capture_image = pipeline->capture_image(capture_id);
+    assert(capture_image && capture_image->size() == 3);
+    const auto capture_library = pipeline->capture_library();
+    assert(std::any_of(capture_library.begin(), capture_library.end(), [&](const runner::json& item) {
+        return item.value("captureId", "") == capture_id && item.value("trackId", -1) == 1;
+    }));
     const std::string timestamp = classified->classification_timestamp;
     const auto duplicate = classified->segmentation_results.front();
     assert(!pipeline->route_segmentation_result(duplicate));
     pipeline->evaluate_timeouts(std::chrono::steady_clock::now() + std::chrono::seconds(1));
     assert(pipeline->track(1)->classification_timestamp == timestamp);  // no duplicate classification
+    assert(pipeline->snapshot().at("completedCount") == 1);
+    for (std::uint64_t frame = 11; frame <= 45; ++frame) (void)pipeline->process_frame(live_frame(frame));
+    const auto empty_belt_snapshot = pipeline->snapshot();
+    assert(empty_belt_snapshot.at("tracks").size() == 1 && empty_belt_snapshot.at("completedCount") == 1);
+    pipeline->reset();
+    const auto reset_snapshot = pipeline->snapshot();
+    assert(reset_snapshot.at("tracks").empty() && reset_snapshot.at("completedCount") == 0);  // no state leak
+    pipeline->stop();
+}
+
+void test_prediction_only_frames_fill_all_four_capture_targets() {
+    auto pipeline = simulated_pipeline(
+        pipeline_config(),
+        {120.0, 180.0, 240.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 780.0}
+    );
+    for (std::uint64_t frame = 1; frame <= 11; ++frame) (void)pipeline->process_frame(live_frame(frame));
+
+    const auto predicted_track = pipeline->track(1);
+    assert(predicted_track && predicted_track->state == runner::TrackState::Lost);
+    assert(predicted_track->last_seen_frame == 3 && !predicted_track->has_current_observation);
+    assert(predicted_track->captured_views.size() == 4);
+    const std::vector<std::uint64_t> expected_frames{5, 7, 9, 11};
+    for (std::size_t index = 0; index < predicted_track->captured_views.size(); ++index) {
+        const auto& view = predicted_track->captured_views[index];
+        assert(view.view_id == static_cast<int>(index));
+        assert(view.frame_id == expected_frames[index]);
+        assert(view.used_tracking_prediction);
+    }
+
+    (void)pipeline->process_frame(live_frame(12));
+    const auto reacquired_track = pipeline->track(1);
+    assert(reacquired_track && reacquired_track->track_id == 1);
+    assert(reacquired_track->last_seen_frame == 12 && reacquired_track->has_current_observation);
+    assert(reacquired_track->captured_views.size() == 4);
     pipeline->stop();
 }
 
 void test_two_view_timeout_and_insufficient_evidence() {
     auto two_view = simulated_pipeline(
-        pipeline_config(), {230.0, 295.0, 360.0, 425.0, 490.0, 555.0, 620.0, 690.0, 760.0},
-        [](std::uint64_t frame) { return frame <= 3; }
+        pipeline_config(), {120.0, 200.0, 310.0, 375.0, 440.0, 505.0, 570.0, 635.0, 700.0, 840.0},
+        [](std::uint64_t frame) { return frame <= 5; }
     );
-    for (std::uint64_t frame = 1; frame <= 9; ++frame) (void)two_view->process_frame(live_frame(frame));
+    for (std::uint64_t frame = 1; frame <= 10; ++frame) (void)two_view->process_frame(live_frame(frame));
     assert(wait_for([&] { return two_view->track(1) && two_view->track(1)->segmentation_results.size() == 2; }));
     std::this_thread::sleep_for(std::chrono::milliseconds(30));
     two_view->evaluate_timeouts(std::chrono::steady_clock::now());
     const auto incomplete = two_view->track(1);
-    assert(incomplete && incomplete->state == runner::TrackState::Classified);
+    assert(incomplete && incomplete->state == runner::TrackState::Completed);
     assert(incomplete->views_used == 2 && incomplete->incomplete_evidence);
     two_view->stop();
 
     auto one_view = simulated_pipeline(
-        pipeline_config(), {230.0, 295.0, 360.0, 425.0, 490.0, 555.0, 620.0, 690.0, 760.0},
-        [](std::uint64_t frame) { return frame <= 3; },
+        pipeline_config(), {120.0, 200.0, 310.0, 375.0, 440.0, 505.0, 570.0, 635.0, 700.0, 840.0},
+        [](std::uint64_t frame) { return frame <= 5; },
         [](const runner::SegmentationJobV2& job) {
             runner::SegmentationResult result;
             result.predicted_class = 0;
@@ -359,12 +501,12 @@ void test_two_view_timeout_and_insufficient_evidence() {
             return result;
         }
     );
-    for (std::uint64_t frame = 1; frame <= 9; ++frame) (void)one_view->process_frame(live_frame(frame));
+    for (std::uint64_t frame = 1; frame <= 10; ++frame) (void)one_view->process_frame(live_frame(frame));
     assert(wait_for([&] { return one_view->track(1) && one_view->track(1)->segmentation_results.size() == 2; }));
     std::this_thread::sleep_for(std::chrono::milliseconds(30));
     one_view->evaluate_timeouts(std::chrono::steady_clock::now());
     const auto failed = one_view->track(1);
-    assert(failed && failed->state == runner::TrackState::Failed && failed->incomplete_evidence);
+    assert(failed && failed->state == runner::TrackState::Rejected && failed->incomplete_evidence);
     one_view->stop();
 }
 
@@ -372,10 +514,109 @@ void test_stale_track_removal_and_recorded_simulation() {
     auto config = pipeline_config();
     config.stale_track_frames = 1;
     config.track_retention_seconds = 0.0;
-    auto pipeline = simulated_pipeline(config, {230.0, -1.0, -1.0});
+    auto pipeline = simulated_pipeline(config, {120.0, -1.0, -1.0});
     for (std::uint64_t frame = 1; frame <= 3; ++frame) (void)pipeline->process_frame(live_frame(frame));
     assert(!pipeline->track(1));
     pipeline->stop();
+}
+
+void test_tracking_admission_motion_and_identity_scenarios() {
+    auto config = pipeline_config();
+    config.tracking_diagnostics = true;
+
+    // Tiny flashes and detections clearly outside the ROI never reach ByteTrack.
+    auto invalid = scripted_pipeline(config, {{
+        {0, "naartjie", 0.95F, 490.0F, 100.0F, 8.0F, 8.0F},
+        {0, "naartjie", 0.95F, 10.0F, 100.0F, 120.0F, 120.0F},
+    }});
+    auto invalid_snapshot = invalid->process_frame(live_frame(1));
+    assert(invalid_snapshot.at("tracks").empty() && !invalid_snapshot.at("trackingDiagnostics").empty());
+    for (std::uint64_t frame = 2; frame <= 60; ++frame) invalid_snapshot = invalid->process_frame(live_frame(frame));
+    assert(invalid_snapshot.at("tracks").empty());  // a long empty/flickering belt cannot grow application state
+    invalid->stop();
+
+    // Strict entry gating blocks a plausible mid-belt detection from creating an ID.
+    config.strict_entry_gating = true;
+    auto gated = scripted_pipeline(config, {{{0, "naartjie", 0.95F, 430.0F, 440.0F, 140.0F, 140.0F}}});
+    assert(gated->process_frame(live_frame(1)).at("tracks").empty());
+    gated->stop();
+    config.strict_entry_gating = false;
+
+    // A persistent static feature remains tentative and is eventually rejected; it never acquires a view.
+    std::vector<std::vector<runner::Detection>> static_frames(14,
+        {{0, "naartjie", 0.95F, 430.0F, 250.0F, 140.0F, 140.0F}});
+    auto stationary = scripted_pipeline(config, static_frames);
+    for (std::uint64_t frame = 1; frame <= static_frames.size(); ++frame) (void)stationary->process_frame(live_frame(frame));
+    const auto static_track = stationary->track(1);
+    assert(static_track && static_track->state == runner::TrackState::Rejected && !static_track->confirmed);
+    assert(static_track->captured_views.empty());
+    stationary->stop();
+
+    // Wrong-direction motion is rejected before it can become an acquisition track.
+    auto upward = scripted_pipeline(config, {
+        {{0, "naartjie", 0.95F, 430.0F, 360.0F, 140.0F, 140.0F}},
+        {{0, "naartjie", 0.95F, 430.0F, 310.0F, 140.0F, 140.0F}},
+        {{0, "naartjie", 0.95F, 430.0F, 260.0F, 140.0F, 140.0F}},
+    });
+    for (std::uint64_t frame = 1; frame <= 3; ++frame) (void)upward->process_frame(live_frame(frame));
+    const auto upward_track = upward->track(1);
+    assert(upward_track && upward_track->state == runner::TrackState::Rejected && !upward_track->confirmed);
+    upward->stop();
+
+    // A one-frame valid flash gets a tentative ID but can never enter acquisition.
+    auto flash = scripted_pipeline(config, {
+        {{0, "naartjie", 0.95F, 430.0F, 80.0F, 140.0F, 140.0F}},
+        {},
+    });
+    (void)flash->process_frame(live_frame(1));
+    (void)flash->process_frame(live_frame(2));
+    const auto flash_track = flash->track(1);
+    assert(flash_track && flash_track->state == runner::TrackState::Lost && !flash_track->confirmed);
+    assert(flash_track->captured_views.empty());
+    flash->stop();
+
+    // A two-frame flicker also stays below the configurable confirmation requirement.
+    auto flicker = scripted_pipeline(config, {
+        {{0, "naartjie", 0.95F, 430.0F, 80.0F, 140.0F, 140.0F}},
+        {{0, "naartjie", 0.95F, 430.0F, 125.0F, 140.0F, 140.0F}},
+        {},
+    });
+    for (std::uint64_t frame = 1; frame <= 3; ++frame) (void)flicker->process_frame(live_frame(frame));
+    const auto flicker_track = flicker->track(1);
+    assert(flicker_track && flicker_track->state == runner::TrackState::Lost && !flicker_track->confirmed);
+    assert(flicker_track->captured_views.empty());
+    flicker->stop();
+
+    // Two nearby downward-moving fruits receive two stable IDs and both confirm.
+    std::vector<std::vector<runner::Detection>> pair_frames;
+    for (int frame = 0; frame < 4; ++frame) {
+        const float y = 70.0F + frame * 55.0F;
+        pair_frames.push_back({
+            {0, "naartjie", 0.95F, 250.0F, y, 120.0F, 120.0F},
+            {0, "naartjie", 0.95F, 560.0F, y + 8.0F, 120.0F, 120.0F},
+        });
+    }
+    auto pair = scripted_pipeline(config, pair_frames);
+    for (std::uint64_t frame = 1; frame <= pair_frames.size(); ++frame) (void)pair->process_frame(live_frame(frame));
+    assert(pair->track(1) && pair->track(1)->confirmed);
+    assert(pair->track(2) && pair->track(2)->confirmed);
+    pair->stop();
+
+    // A brief miss is LOST for one frame and resumes the same ID inside the tracker buffer.
+    auto missed = scripted_pipeline(config, {
+        {{0, "naartjie", 0.95F, 430.0F, 70.0F, 140.0F, 140.0F}},
+        {{0, "naartjie", 0.95F, 430.0F, 125.0F, 140.0F, 140.0F}},
+        {{0, "naartjie", 0.95F, 430.0F, 180.0F, 140.0F, 140.0F}},
+        {},
+        {{0, "naartjie", 0.95F, 430.0F, 245.0F, 140.0F, 140.0F}},
+    });
+    for (std::uint64_t frame = 1; frame <= 3; ++frame) (void)missed->process_frame(live_frame(frame));
+    assert(missed->track(1) && missed->track(1)->confirmed);
+    (void)missed->process_frame(live_frame(4));
+    assert(missed->track(1)->state == runner::TrackState::Lost);
+    (void)missed->process_frame(live_frame(5));
+    assert(missed->track(1) && missed->track(1)->track_id == 1 && missed->track(1)->state != runner::TrackState::Lost);
+    missed->stop();
 }
 
 }  // namespace
@@ -389,8 +630,10 @@ int main() {
     test_zone_progress_capture_and_crop_math();
     test_worst_confident_class_aggregation();
     test_routing_four_view_classification_and_no_duplicate();
+    test_prediction_only_frames_fill_all_four_capture_targets();
     test_two_view_timeout_and_insufficient_evidence();
     test_stale_track_removal_and_recorded_simulation();
+    test_tracking_admission_motion_and_identity_scenarios();
     std::cout << "runner tests passed\n";
     return 0;
 }

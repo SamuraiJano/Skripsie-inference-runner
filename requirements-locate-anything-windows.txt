@@ -1,0 +1,18 @@
+# NVIDIA LocateAnything-3B release versions. PyTorch/torchvision remain managed
+# by the runner's CUDA setup so they stay matched to the installed driver.
+transformers==4.57.1
+tokenizers==0.22.0
+accelerate==1.5.2
+peft==0.12.0
+timm>=1.0.11
+sentencepiece==0.2.0
+einops>=0.8,<1
+opencv-python-headless==4.11.0.86
+lmdb==1.7.5
+decord==0.6.0
+# Make requests/Hugging Face use the Windows certificate store, as pip does.
+pip-system-certs==5.3
+Pillow==11.1.0
+numpy>=1.25,<2
+# The base venv may expose a newer system-site SciPy built for NumPy 2.
+scipy>=1.10,<1.16

@@ -14,7 +14,6 @@
 #include <utility>
 #include <vector>
 
-#define STB_IMAGE_IMPLEMENTATION
 #define STBI_NO_GIF
 #define STBI_NO_HDR
 #define STBI_NO_LINEAR
@@ -52,7 +51,7 @@ int resolve_gpu_index(int requested_index) {
     return index;
 #else
     (void)requested_index;
-    throw std::runtime_error("this NCNN build has no Vulkan support; rebuild with scripts/build_windows.ps1");
+    throw std::runtime_error("this NCNN build has no Vulkan support; rebuild with scripts/build_inference_runner_windows.ps1");
 #endif
 }
 
@@ -393,7 +392,12 @@ public:
                   << ")\n";
     }
 
-    InferenceResult infer(const std::vector<unsigned char>& encoded_image, float confidence, float iou) override {
+    InferenceResult infer(
+        const std::vector<unsigned char>& encoded_image,
+        float confidence,
+        float iou,
+        const GroundingRequest&
+    ) override {
         const auto total_start = Clock::now();
         const auto decode_start = total_start;
         const DecodedImage image = decode(encoded_image);
@@ -501,6 +505,10 @@ bool ncnn_available() {
 
 EngineRuntimeInfo engine_runtime_info() {
     EngineRuntimeInfo info;
+    info.tflite_compiled = RUNNER_WITH_TFLITE != 0;
+    info.tflite_available = tflite_available();
+    info.tensorrt_compiled = RUNNER_WITH_TENSORRT != 0;
+    info.tensorrt_available = tensorrt_available();
 #if RUNNER_WITH_NCNN
     info.ncnn_available = true;
 #if NCNN_VULKAN

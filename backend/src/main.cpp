@@ -39,6 +39,7 @@ struct Arguments {
     std::string host = "127.0.0.1";
     int port = 8080;
     fs::path data = "data/models";
+    fs::path models = "models";
     fs::path static_files = RUNNER_FRONTEND_DIST;
     fs::path pipeline_config = "config/pipeline.example.json";
     std::string detector_model_id;
@@ -62,7 +63,8 @@ Arguments parse_arguments(int argc, char** argv) {
                 << "Usage: inference_runner_windows [options]\n"
                 << "  --host <address>   Bind address (default 127.0.0.1)\n"
                 << "  --port <number>    HTTP port (default 8080)\n"
-                << "  --data <path>      Model storage directory\n"
+                << "  --data <path>      Runtime state directory\n"
+                << "  --models <path>    Auto-discovered model directory (default models)\n"
                 << "  --static <path>    Built React dist directory\n"
                 << "  --pipeline-config <path>  Live conveyor pipeline JSON\n"
                 << "  --detector-model <id>     Override YOLO26n detector model ID\n"
@@ -75,6 +77,7 @@ Arguments parse_arguments(int argc, char** argv) {
         if (key == "--host") args.host = value;
         else if (key == "--port") args.port = std::stoi(value);
         else if (key == "--data") args.data = value;
+        else if (key == "--models") args.models = value;
         else if (key == "--static") args.static_files = value;
         else if (key == "--pipeline-config") args.pipeline_config = value;
         else if (key == "--detector-model") args.detector_model_id = value;
@@ -94,13 +97,6 @@ std::string architecture() {
 #else
     return "unknown";
 #endif
-}
-
-std::string lower_copy(std::string value) {
-    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
-        return static_cast<char>(std::tolower(ch));
-    });
-    return value;
 }
 
 void respond_json(httplib::Response& response, const json& value, int status = 200) {
@@ -163,29 +159,6 @@ const httplib::FormData& required_part(const std::vector<httplib::FormData>& par
 std::string optional_part(const std::vector<httplib::FormData>& parts, const char* name) {
     const auto found = std::find_if(parts.begin(), parts.end(), [&](const httplib::FormData& part) { return part.name == name; });
     return found == parts.end() ? std::string() : found->content;
-}
-
-const httplib::FormData* find_part(const std::vector<httplib::FormData>& parts, const char* name) {
-    const auto found = std::find_if(parts.begin(), parts.end(), [&](const httplib::FormData& part) { return part.name == name; });
-    return found == parts.end() ? nullptr : &*found;
-}
-
-int int_part(const std::vector<httplib::FormData>& parts, const char* name, int fallback) {
-    const std::string value = optional_part(parts, name);
-    if (value.empty()) return fallback;
-    try {
-        return std::stoi(value);
-    } catch (...) {
-        throw std::invalid_argument(std::string("invalid integer field '") + name + "'");
-    }
-}
-
-bool bool_part(const std::vector<httplib::FormData>& parts, const char* name, bool fallback = false) {
-    const std::string value = lower_copy(optional_part(parts, name));
-    if (value.empty()) return fallback;
-    if (value == "true" || value == "1" || value == "yes") return true;
-    if (value == "false" || value == "0" || value == "no") return false;
-    throw std::invalid_argument(std::string("invalid boolean field '") + name + "'");
 }
 
 float float_part(const std::vector<httplib::FormData>& parts, const char* name, float fallback) {
@@ -252,6 +225,8 @@ double laplacian_variance(const std::vector<unsigned char>& rgb, int width, int 
     double sum = 0.0;
     double squares = 0.0;
     std::size_t count = 0;
+    // Variance of this four-neighbour Laplacian is a cheap focus metric: crisp
+    // edges produce larger responses, while blurred/flat crops remain small.
     for (int y = 1; y + 1 < height; ++y) {
         for (int x = 1; x + 1 < width; ++x) {
             const double value = grey(x - 1, y) + grey(x + 1, y) + grey(x, y - 1) + grey(x, y + 1) - 4.0 * grey(x, y);
@@ -351,7 +326,7 @@ int main(int argc, char** argv) {
         if ((!runtime.vulkan_compiled || runtime.gpu_count < 1) && initial_python_health.value("status", "unavailable") != "ok") {
             throw std::runtime_error("no model backend is available; start the Python model service or repair the Vulkan GPU runtime");
         }
-        runner::ModelStore models(args.data);
+        runner::ModelStore models(args.models, args.data);
         runner::PipelineConfig pipeline_config = load_pipeline_config(args.pipeline_config);
         if (!args.detector_model_id.empty()) pipeline_config.yolo26n_model_id = args.detector_model_id;
         if (!args.segmentation_model_id.empty()) pipeline_config.segmentation_model_id = args.segmentation_model_id;
@@ -414,7 +389,11 @@ int main(int argc, char** argv) {
         });
 
         server.Get("/api/models", [&](const httplib::Request&, httplib::Response& response) {
-            respond_json(response, models.list());
+            guarded(response, [&] { respond_json(response, models.rescan()); });
+        });
+
+        server.Post("/api/models/rescan", [&](const httplib::Request&, httplib::Response& response) {
+            guarded(response, [&] { respond_json(response, models.rescan()); });
         });
 
         server.Get("/api/capabilities", [&](const httplib::Request&, httplib::Response& response) {
@@ -427,6 +406,26 @@ int main(int argc, char** argv) {
 
         server.Get("/api/pipeline/config", [&](const httplib::Request&, httplib::Response& response) {
             respond_json(response, pipeline_config.to_json());
+        });
+
+        server.Get("/api/pipeline/captures", [&](const httplib::Request&, httplib::Response& response) {
+            guarded(response, [&] { respond_json(response, pipeline->capture_library()); });
+        });
+
+        server.Get(R"(/api/pipeline/captures/([A-Za-z0-9_-]+)\.jpg)", [&](const httplib::Request& request, httplib::Response& response) {
+            guarded(response, [&] {
+                const auto image = pipeline->capture_image(request.matches[1].str());
+                if (!image) {
+                    respond_json(response, {{"error", "capture image not found"}}, 404);
+                    return;
+                }
+                response.status = 200;
+                response.set_header("Cache-Control", "public, max-age=31536000, immutable");
+                response.set_content(
+                    std::string(reinterpret_cast<const char*>(image->data()), image->size()),
+                    "image/jpeg"
+                );
+            });
         });
 
         server.Post("/api/pipeline/reset", [&](const httplib::Request&, httplib::Response& response) {
@@ -450,40 +449,8 @@ int main(int argc, char** argv) {
             });
         });
 
-        server.Post("/api/models", [&](const httplib::Request& request, httplib::Response& response, const httplib::ContentReader& reader) {
-            guarded(response, [&] {
-                const auto parts = read_multipart(request, reader);
-                if (const auto* artifact = find_part(parts, "model")) {
-                    if (artifact->content.size() > 1024ULL * 1024ULL * 1024ULL) {
-                        throw std::invalid_argument("model artifact exceeds the 1 GB Windows profile limit");
-                    }
-                    respond_json(response, models.import_artifact(
-                        optional_part(parts, "name"), optional_part(parts, "task"), optional_part(parts, "precision"),
-                        artifact->filename, artifact->content, bool_part(parts, "trustedCheckpoint"),
-                        int_part(parts, "inputWidth", 640), int_part(parts, "inputHeight", 640)
-                    ), 201);
-                    return;
-                }
-                const auto& manifest = required_part(parts, "manifest");
-                const auto& param = required_part(parts, "param");
-                const auto& bin = required_part(parts, "bin");
-                if (manifest.content.size() > 1024 * 1024) throw std::invalid_argument("manifest is too large");
-                if (param.content.size() > 32 * 1024 * 1024) throw std::invalid_argument(".param file is too large");
-                if (bin.content.size() > 1024ULL * 1024ULL * 1024ULL) throw std::invalid_argument(".bin file exceeds the 1 GB Windows profile limit");
-                respond_json(response, models.import_model(json::parse(manifest.content), param.content, bin.content), 201);
-            });
-        });
-
         server.Post(R"(/api/models/([A-Za-z0-9_-]+)/activate)", [&](const httplib::Request& request, httplib::Response& response) {
             guarded(response, [&] { respond_json(response, models.activate(request.matches[1].str())); });
-        });
-
-        server.Delete(R"(/api/models/([A-Za-z0-9_-]+))", [&](const httplib::Request& request, httplib::Response& response) {
-            guarded(response, [&] {
-                const std::string id = request.matches[1].str();
-                models.remove(id);
-                respond_json(response, {{"deleted", id}});
-            });
         });
 
         server.Post("/api/infer", [&](const httplib::Request& request, httplib::Response& response, const httplib::ContentReader& reader) {
@@ -494,8 +461,15 @@ int main(int argc, char** argv) {
                 const std::string model_id = optional_part(parts, "modelId");
                 const float confidence = float_part(parts, "confidence", 0.25F);
                 const float iou = float_part(parts, "iou", 0.50F);
+                runner::GroundingRequest grounding;
+                grounding.prompt = optional_part(parts, "prompt");
+                grounding.mode = optional_part(parts, "groundingMode");
+                grounding.generation_mode = optional_part(parts, "generationMode");
+                if (grounding.mode.empty()) grounding.mode = "detect";
+                if (grounding.generation_mode.empty()) grounding.generation_mode = "hybrid";
+                if (grounding.prompt.size() > 1000) throw std::invalid_argument("grounding prompt must not exceed 1000 characters");
                 const std::vector<unsigned char> bytes(image_part.content.begin(), image_part.content.end());
-                respond_json(response, models.infer(model_id, bytes, confidence, iou).to_json());
+                respond_json(response, models.infer(model_id, bytes, confidence, iou, grounding).to_json());
             });
         });
 
@@ -532,7 +506,8 @@ int main(int argc, char** argv) {
                   << "  engine: " << runner::engine_name() << '\n'
                   << "  gpu: " << runtime.default_gpu_name << " (Vulkan device " << runtime.default_gpu_index << ")\n"
                   << "  architecture: " << architecture() << " (" << cores << " logical cores)\n"
-                  << "  models: " << fs::absolute(args.data) << '\n'
+                  << "  models: " << fs::absolute(args.models) << " (automatic discovery)\n"
+                  << "  state: " << fs::absolute(args.data) << '\n'
                   << "  pipeline config: " << fs::absolute(args.pipeline_config) << '\n'
                   << "  model service: " << args.python_backend_url << " (" << runner::python_backend_health().value("status", "unavailable") << ")\n"
                   << "  dashboard: http://" << (args.host == "0.0.0.0" ? "127.0.0.1" : args.host) << ':' << args.port << "\n";

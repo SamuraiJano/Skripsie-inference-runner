@@ -9,8 +9,13 @@ std::unique_ptr<InferenceEngine> create_engine(
     const std::filesystem::path& primary_path,
     const std::filesystem::path& secondary_path
 ) {
+    if (config.backend == "tflite") return create_tflite_engine(config, primary_path);
+    if (config.backend == "tensorrt") return create_tensorrt_engine(config, primary_path);
     if (config.format == "ncnn") return create_ncnn_engine(config, primary_path, secondary_path);
-    if (config.backend == "ultralytics") return create_python_engine(config, primary_path);
+    if (config.backend == "ultralytics" || config.backend == "locate-anything" ||
+        config.backend == "grounding-dino" || config.backend == "dfine") {
+        return create_python_engine(config, primary_path);
+    }
     throw std::runtime_error("no inference backend is registered for model format '" + config.format + "'");
 }
 

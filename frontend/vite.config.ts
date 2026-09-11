@@ -6,6 +6,8 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
+      // Keep frontend code on same-origin /api URLs during development. Vite
+      // forwards them to the public C++ service; Python remains private.
       '/api': 'http://127.0.0.1:8080',
     },
   },

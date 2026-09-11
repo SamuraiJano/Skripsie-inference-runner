@@ -1,5 +1,10 @@
-export type ModelTask = 'classification' | 'yolo-detect' | 'yolo-segment' | 'raw'
-export type ModelPrecision = 'fp32' | 'fp16' | 'int8'
+export type ModelTask = 'classification' | 'yolo-detect' | 'yolo-segment' | 'vision-grounding' | 'raw'
+export type ModelPrecision = 'fp32' | 'fp16' | 'bf16' | 'fp8' | 'int8' | 'int4' | 'unknown'
+
+// These interfaces mirror JSON produced by the C++ public API (which may in
+// turn normalize a Python model response). They document the wire contract but
+// do not perform runtime validation, so backend and frontend changes must stay
+// synchronized.
 
 export interface ModelFormatCapability {
   format: string
@@ -60,15 +65,17 @@ export interface StoredModel {
   exporter: { name: string; version: string }
   runtime: { name: string; version: string; useVulkanCompute: boolean; gpuDevice: number }
   legacyUnverified: boolean
-}
-
-export interface DirectModelDraft {
-  name: string
-  task: Exclude<ModelTask, 'raw'>
-  precision: ModelPrecision
-  trustedCheckpoint: boolean
-  inputWidth: number
-  inputHeight: number
+  family: string
+  relativePath: string
+  quantization: {
+    label: string
+    method: string
+    quantized: boolean
+  }
+  runtimeAvailable: boolean
+  compatible: boolean
+  statusReason: string
+  autoDetected: boolean
 }
 
 export interface MaskRle {
@@ -96,6 +103,29 @@ export interface ClassificationScore {
   score: number
 }
 
+export interface GroundingPoint {
+  classId: number
+  label: string
+  x: number
+  y: number
+}
+
+export type GroundingMode =
+  | 'detect'
+  | 'ground-single'
+  | 'ground-multi'
+  | 'detect-text'
+  | 'ground-text'
+  | 'gui-box'
+  | 'gui-point'
+  | 'point'
+
+export interface GroundingRequest {
+  prompt: string
+  groundingMode: GroundingMode
+  generationMode: 'fast' | 'hybrid' | 'slow'
+}
+
 export interface RawTensor {
   name: string
   shape: number[]
@@ -109,8 +139,10 @@ export interface InferenceResult {
   sourceWidth: number
   sourceHeight: number
   detections: Detection[]
+  points: GroundingPoint[]
   classifications: ClassificationScore[]
   tensors: RawTensor[]
+  answer: string
   timing: {
     decodeMs: number
     preprocessMs: number
@@ -123,46 +155,6 @@ export interface InferenceResult {
     backendTotalMs: number
   }
   clientHttpRoundTripMs?: number
-}
-
-export interface ModelManifestDraft {
-  name: string
-  schemaVersion: 2
-  task: ModelTask
-  precision: ModelPrecision
-  framework: 'ncnn'
-  checkpointSha256: string
-  datasetHash: string
-  splitHash: string
-  classSchemaHash: string
-  exporter: { name: string; version: string }
-  calibrationId: string | null
-  input: {
-    width: number
-    height: number
-    blob: string
-    mean: [number, number, number]
-    norm: [number, number, number]
-  }
-  outputs: string[]
-  labels: string[]
-  runtime: {
-    name: 'ncnn'
-    version: string
-    threads: number
-    useVulkanCompute: boolean
-    gpuDevice: number
-    useInt8Inference: boolean
-    useInt8Storage: boolean
-    useFp16Storage: boolean
-    useFp16Arithmetic: boolean
-  }
-  artifactVerification: { verified: boolean; quantized: boolean }
-  classification: {
-    applySoftmax: boolean
-    topK: number
-  }
-  maskThreshold: number
 }
 
 export interface PipelineCoordinate {
@@ -178,9 +170,28 @@ export interface PipelineConfig {
     segmentation_model_path: string
   }
   zones: {
-    acquisition_zone_start_x: PipelineCoordinate
-    classification_line_x: PipelineCoordinate
-    post_classification_zone: PipelineCoordinate
+    roi_left: PipelineCoordinate
+    roi_right: PipelineCoordinate
+    roi_top: PipelineCoordinate
+    roi_bottom: PipelineCoordinate
+    entry_zone_height: PipelineCoordinate
+    exit_zone_height: PipelineCoordinate
+  }
+  tracking: {
+    strict_entry_gating: boolean
+    roi_boundary_tolerance_ratio: number
+    minimum_bbox_width_ratio: number
+    minimum_bbox_height_ratio: number
+    minimum_bbox_area_ratio: number
+    maximum_bbox_area_ratio: number
+    maintenance_size_tolerance: number
+    minimum_confirmation_hits: number
+    motion_window_frames: number
+    minimum_downward_displacement_ratio: number
+    maximum_upward_displacement_ratio: number
+    stationary_tolerance_ratio: number
+    maximum_stationary_frames: number
+    debug_diagnostics: boolean
   }
   capture: {
     target_capture_percentages: number[]
@@ -203,13 +214,14 @@ export interface PipelineConfig {
 }
 
 export type TrackState =
-  | 'NEW'
+  | 'TENTATIVE'
+  | 'CONFIRMED'
   | 'ACQUIRING'
   | 'WAITING_FOR_SEGMENTATION'
   | 'WAITING_FOR_CLASSIFICATION'
-  | 'CLASSIFIED'
-  | 'EXITED'
-  | 'FAILED'
+  | 'LOST'
+  | 'COMPLETED'
+  | 'REJECTED'
 
 export interface LiveTrack {
   trackId: number
@@ -218,13 +230,23 @@ export interface LiveTrack {
   firstSeenFrame: number
   lastSeenFrame: number
   state: TrackState
+  confirmationHits: number
+  confirmed: boolean
+  hasCurrentObservation: boolean
+  motionStatus: string
+  sizeStatus: string
   acquisitionZoneProgress: number
   capturedViews: Array<{
+    captureId: string
+    imageUrl: string | null
     frameId: number
     viewId: number
     zoneProgress: number
     sharpness: number
+    usedTrackingPrediction: boolean
     segmentationStatus: string
+    cropWidth: number
+    cropHeight: number
   }>
   segmentationResults: Array<{
     frameId: number
@@ -246,6 +268,10 @@ export interface LiveTrack {
   viewsUsed: number
   segmentationCompleted: number
   totalVisibleDefectArea: number
+  classificationCompleted: boolean
+  counted: boolean
+  exited: boolean
+  failureReason: string | null
   classificationLatencyMs: number
 }
 
@@ -259,5 +285,25 @@ export interface PipelineSnapshot {
   detectorFps: number
   segmentationLatencyMs: number
   classificationLatencyMs: number
+  completedCount: number
+  classCounts: Record<string, number>
+  trackingDiagnostics: string[]
   config: PipelineConfig
+}
+
+export interface PipelineCapture {
+  captureId: string
+  imageUrl: string
+  runId: string
+  trackId: number
+  frameId: number
+  viewId: number
+  timestamp: string
+  zoneProgress: number
+  originalBoundingBox: Detection
+  sharpness: number
+  detectionConfidence: number
+  usedTrackingPrediction: boolean
+  cropWidth: number
+  cropHeight: number
 }

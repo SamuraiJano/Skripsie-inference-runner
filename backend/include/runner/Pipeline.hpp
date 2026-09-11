@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "runner/Types.hpp"
@@ -77,20 +78,38 @@ private:
 struct Track {
     int id = -1;
     Detection detection;
+    Detection last_observation;
     std::uint64_t last_frame_id = 0;
     int hits = 0;
     int missed = 0;
+    float velocity_x = 0.0F;
+    float velocity_y = 0.0F;
+    bool has_velocity = false;
 };
 
 class ByteTracker {
 public:
-    ByteTracker(float high_threshold = 0.5F, float low_threshold = 0.1F, float match_iou = 0.3F, int max_missed = 30);
-    std::vector<Detection> update(std::uint64_t frame_id, const std::vector<Detection>& detections);
+    ByteTracker(
+        float high_threshold = 0.5F,
+        float low_threshold = 0.1F,
+        float match_iou = 0.3F,
+        int max_missed = 30,
+        float new_track_threshold = -1.0F
+    );
+    std::vector<Detection> update(
+        std::uint64_t frame_id,
+        const std::vector<Detection>& detections,
+        const std::vector<bool>& new_track_eligible = {},
+        bool include_predictions = false
+    );
     const std::vector<Track>& tracks() const { return tracks_; }
+    bool has_track(int track_id) const;
+    bool observed_in_frame(int track_id, std::uint64_t frame_id) const;
 
 private:
     float high_threshold_;
     float low_threshold_;
+    float new_track_threshold_;
     float match_iou_;
     int max_missed_;
     int next_id_ = 1;
@@ -194,13 +213,14 @@ private:
 // model runtimes. The HTTP/camera adapter supplies RGB frames and callbacks, which
 // keeps all state transitions and routing deterministic and host-testable.
 enum class TrackState {
-    New,
+    Tentative,
+    Confirmed,
     Acquiring,
     WaitingForSegmentation,
     WaitingForClassification,
-    Classified,
-    Exited,
-    Failed,
+    Lost,
+    Completed,
+    Rejected,
 };
 
 std::string track_state_name(TrackState state);
@@ -222,16 +242,39 @@ struct PipelineConfig {
     int naartjie_class_id = 0;
     float bytetrack_high_threshold = 0.50F;
     float bytetrack_low_threshold = 0.10F;
+    float bytetrack_new_track_threshold = 0.65F;
     float bytetrack_match_iou = 0.30F;
     int bytetrack_max_missed = 30;
-    Coordinate acquisition_zone_start_x{0.10, true};
-    Coordinate classification_line_x{0.75, true};
-    Coordinate post_classification_zone{0.95, true};
+    // Normalized vertical conveyor geometry. Entry/exit heights are measured
+    // inward from the top/bottom ROI edges.
+    Coordinate roi_left{0.15, true};
+    Coordinate roi_right{0.85, true};
+    Coordinate roi_top{0.05, true};
+    Coordinate roi_bottom{0.95, true};
+    Coordinate entry_zone_height{0.12, true};
+    Coordinate exit_zone_height{0.12, true};
+    // New-ID admission is intentionally stricter than maintenance association.
+    // Ratio thresholds are relative to the complete input frame.
+    bool strict_entry_gating = false;
+    double roi_boundary_tolerance_ratio = 0.02;
+    double minimum_bbox_width_ratio = 0.025;
+    double minimum_bbox_height_ratio = 0.025;
+    double minimum_bbox_area_ratio = 0.003;
+    double maximum_bbox_area_ratio = 0.25;
+    double maintenance_size_tolerance = 0.50;
+    // Tentative candidates need repeated high-confidence observations plus
+    // net downward motion before acquisition is enabled.
+    int minimum_confirmation_hits = 3;
+    int motion_window_frames = 6;
+    double minimum_downward_displacement_ratio = 0.003;
+    double maximum_upward_displacement_ratio = 0.01;
+    double stationary_tolerance_ratio = 0.002;
+    int maximum_stationary_frames = 12;
     std::vector<double> target_capture_percentages{0.20, 0.40, 0.60, 0.80};
     int target_views = 4;
     int minimum_capture_frame_gap = 2;
     int minimum_views_for_classification = 2;
-    double crop_margin = 0.10;
+    double crop_margin = 0.0;
     double sharpness_threshold = 60.0;
     int minimum_crop_width = 32;
     int minimum_crop_height = 32;
@@ -241,11 +284,12 @@ struct PipelineConfig {
     double classification_delay_seconds = 0.10;
     double classification_timeout_seconds = 2.0;
     float class_confidence_threshold = 0.55F;
-    int stale_track_frames = 45;
+    int stale_track_frames = 30;
     double track_retention_seconds = 5.0;
     std::filesystem::path output_directory = "data/results";
     std::filesystem::path logging_directory = "data/logs";
     bool debug_save_images = false;
+    bool tracking_diagnostics = false;
     int windows_cpu_threads = 8;
     int live_max_fps = 30;
 
@@ -296,6 +340,7 @@ struct SegmentationResult {
 };
 
 struct CapturedView {
+    std::string capture_id;
     int track_id = -1;
     std::uint64_t frame_id = 0;
     int view_id = -1;
@@ -305,6 +350,7 @@ struct CapturedView {
     CropImage crop;
     double sharpness = 0.0;
     float detection_confidence = 0.0F;
+    bool used_tracking_prediction = false;
     std::string segmentation_status = "queued";
 };
 
@@ -337,7 +383,8 @@ struct TrackRecord {
     std::uint64_t last_seen_frame = 0;
     std::string first_seen_timestamp;
     std::string last_seen_timestamp;
-    TrackState state = TrackState::New;
+    TrackState state = TrackState::Tentative;
+    TrackState state_before_lost = TrackState::Tentative;
     double acquisition_zone_progress = 0.0;
     std::vector<CapturedView> captured_views;
     std::vector<SegmentationResult> segmentation_results;
@@ -352,7 +399,18 @@ struct TrackRecord {
     double detection_latency_ms = 0.0;
     double segmentation_latency_ms = 0.0;
     double classification_latency_ms = 0.0;
-    double previous_center_x = -1.0;
+    double previous_center_y = -1.0;
+    int confirmation_hits = 0;
+    int stationary_frames = 0;
+    bool confirmed = false;
+    bool has_current_observation = true;
+    bool classification_completed = false;
+    bool counted = false;
+    bool exited = false;
+    std::string motion_status = "PENDING";
+    std::string size_status = "VALID";
+    std::string rejection_reason;
+    std::deque<std::pair<std::uint64_t, double>> centroid_y_history;
     std::chrono::steady_clock::time_point first_seen_at;
     std::chrono::steady_clock::time_point line_reached_at;
     std::chrono::steady_clock::time_point terminal_at;
@@ -443,6 +501,8 @@ public:
     void start();
     json process_frame(const LiveFrame& frame);
     json snapshot() const;
+    json capture_library(std::size_t limit = 500) const;
+    std::optional<std::vector<unsigned char>> capture_image(const std::string& capture_id) const;
     void reset();
     void stop();
 
@@ -454,9 +514,19 @@ public:
 
 private:
     void segmentation_loop();
-    void update_track(const LiveFrame& frame, const Detection& detection, const std::vector<Detection>& detections, double detection_ms);
+    void update_track(
+        const LiveFrame& frame,
+        const Detection& detection,
+        const std::vector<Detection>& detections,
+        double detection_ms,
+        bool has_observation
+    );
     void maybe_classify_locked(TrackRecord& track, std::chrono::steady_clock::time_point now);
-    void mark_failed_locked(TrackRecord& track, const std::string& reason, std::chrono::steady_clock::time_point now);
+    void mark_rejected_locked(TrackRecord& track, const std::string& reason, std::chrono::steady_clock::time_point now, bool save_result);
+    void mark_missing_tracks_locked(std::uint64_t current_frame);
+    void add_diagnostic_locked(std::string message);
+    void release_track_payload_locked(TrackRecord& track);
+    void persist_capture_locked(CapturedView& view);
     void save_result_locked(TrackRecord& track);
     json snapshot_locked() const;
 
@@ -466,6 +536,8 @@ private:
     Cropper cropper_;
     mutable std::mutex tracks_mutex_;
     std::unordered_map<int, TrackRecord> tracks_;
+    std::unordered_set<int> terminal_track_ids_;
+    std::deque<std::string> recent_tracking_diagnostics_;
     std::unique_ptr<ByteTracker> tracker_;
     BoundedFifoQueue<SegmentationJobV2> segmentation_queue_;
     std::vector<std::thread> segmentation_threads_;
@@ -478,7 +550,10 @@ private:
     double detector_fps_ = 0.0;
     double last_segmentation_latency_ms_ = 0.0;
     double last_classification_latency_ms_ = 0.0;
+    std::uint64_t completed_count_ = 0;
+    std::unordered_map<int, std::uint64_t> class_counts_;
     std::chrono::steady_clock::time_point last_frame_at_;
+    std::string capture_run_id_;
 };
 
 }  // namespace runner

@@ -13,19 +13,39 @@
   "bytetrack": {
     "high_threshold": 0.5,
     "low_threshold": 0.1,
+    "new_track_threshold": 0.65,
     "match_iou": 0.3,
     "max_missed_frames": 30
   },
   "zones": {
-    "acquisition_zone_start_x": { "value": 0.1, "normalized": true },
-    "classification_line_x": { "value": 0.75, "normalized": true },
-    "post_classification_zone": { "value": 0.95, "normalized": true }
+    "roi_left": { "value": 0.15, "normalized": true },
+    "roi_right": { "value": 0.85, "normalized": true },
+    "roi_top": { "value": 0.05, "normalized": true },
+    "roi_bottom": { "value": 0.95, "normalized": true },
+    "entry_zone_height": { "value": 0.12, "normalized": true },
+    "exit_zone_height": { "value": 0.12, "normalized": true }
+  },
+  "tracking": {
+    "strict_entry_gating": false,
+    "roi_boundary_tolerance_ratio": 0.02,
+    "minimum_bbox_width_ratio": 0.025,
+    "minimum_bbox_height_ratio": 0.025,
+    "minimum_bbox_area_ratio": 0.003,
+    "maximum_bbox_area_ratio": 0.25,
+    "maintenance_size_tolerance": 0.5,
+    "minimum_confirmation_hits": 3,
+    "motion_window_frames": 6,
+    "minimum_downward_displacement_ratio": 0.003,
+    "maximum_upward_displacement_ratio": 0.01,
+    "stationary_tolerance_ratio": 0.002,
+    "maximum_stationary_frames": 12,
+    "debug_diagnostics": false
   },
   "capture": {
     "target_capture_percentages": [0.2, 0.4, 0.6, 0.8],
     "target_views": 4,
     "minimum_frame_gap": 2,
-    "crop_margin": 0.1,
+    "crop_margin": 0.0,
     "sharpness_threshold": 60.0,
     "minimum_crop_width": 32,
     "minimum_crop_height": 32,
@@ -42,7 +62,7 @@
     "confidence_threshold": 0.55
   },
   "retention": {
-    "stale_track_frames": 45,
+    "stale_track_frames": 30,
     "release_after_seconds": 5.0
   },
   "output": {

@@ -16,23 +16,18 @@ namespace runner {
 
 class ModelStore {
 public:
-    explicit ModelStore(std::filesystem::path root);
+    ModelStore(std::filesystem::path models_root, std::filesystem::path state_root);
 
     nlohmann::json list() const;
-    nlohmann::json import_model(const nlohmann::json& manifest, const std::string& param, const std::string& bin);
-    nlohmann::json import_artifact(
-        const std::string& name,
-        const std::string& task,
-        const std::string& precision,
-        const std::string& filename,
-        const std::string& artifact,
-        bool trusted_checkpoint,
-        int input_width,
-        int input_height
-    );
+    nlohmann::json rescan();
     nlohmann::json activate(const std::string& id);
-    void remove(const std::string& id);
-    InferenceResult infer(const std::string& requested_model_id, const std::vector<unsigned char>& image, float confidence, float iou);
+    InferenceResult infer(
+        const std::string& requested_model_id,
+        const std::vector<unsigned char>& image,
+        float confidence,
+        float iou,
+        const GroundingRequest& grounding = {}
+    );
     InferenceResult infer_pipeline_model(const std::string& model_id, const std::vector<unsigned char>& image, float confidence, float iou);
     nlohmann::json benchmark(
         const std::string& requested_model_id,
@@ -47,19 +42,30 @@ public:
 private:
     struct Record {
         ModelConfig config;
-        std::filesystem::path directory;
+        std::filesystem::path primary_path;
+        std::filesystem::path secondary_path;
         std::uintmax_t size_bytes = 0;
+        std::string family;
+        std::string relative_path;
+        std::string quantization;
+        std::string quantization_method;
+        std::string status_reason;
+        bool quantized = false;
+        bool runtime_available = false;
+        bool compatible = true;
     };
 
-    std::filesystem::path root_;
+    std::filesystem::path models_root_;
+    std::filesystem::path state_root_;
     std::vector<Record> records_;
     std::string active_id_;
     std::shared_ptr<InferenceEngine> active_engine_;
     std::unordered_map<std::string, std::shared_ptr<InferenceEngine>> pipeline_engines_;
     mutable std::mutex state_mutex_;
+    std::mutex discovery_mutex_;
     std::mutex inference_mutex_;
 
-    void load_from_disk();
+    void restore_active_model();
     Record* find_record(const std::string& id);
     const Record* find_record(const std::string& id) const;
     nlohmann::json public_record(const Record& record) const;

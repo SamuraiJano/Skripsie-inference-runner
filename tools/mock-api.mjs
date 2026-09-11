@@ -1,12 +1,11 @@
 import { createServer } from 'node:http'
-import { randomUUID } from 'node:crypto'
 
 const startedAt = Date.now()
 const models = [{
   id: 'demo-yolo-model',
   name: 'Demo YOLO detector',
   task: 'yolo-detect',
-  precision: 'fp16',
+  precision: 'fp32',
   framework: 'ncnn',
   format: 'ncnn',
   artifactFile: '',
@@ -26,6 +25,13 @@ const models = [{
   exporter: { name: 'ultralytics', version: '8.4.95' },
   runtime: { name: 'ncnn', version: '1.0.20260526', useVulkanCompute: true, gpuDevice: 0 },
   legacyUnverified: false,
+  family: 'yolo26n-seg',
+  relativePath: 'yolo26n-seg/yolo26n-seg_ncnn_model',
+  quantization: { label: 'Not quantized (FP32 weights)', method: 'NCNN package metadata', quantized: false },
+  runtimeAvailable: true,
+  compatible: true,
+  statusReason: '',
+  autoDetected: true,
   active: true,
   sizeBytes: 12_485_120,
   createdAt: new Date().toISOString(),
@@ -34,19 +40,27 @@ const models = [{
 const pipelineConfig = {
   models: { yolo26n_model_id: 'demo-yolo-model', segmentation_model_id: 'demo-yolo-model', yolo26n_model_path: '', segmentation_model_path: '' },
   detection: { confidence_threshold: 0.25, iou_threshold: 0.5, naartjie_class_id: 0 },
-  bytetrack: { high_threshold: 0.5, low_threshold: 0.1, match_iou: 0.3, max_missed_frames: 30 },
+  bytetrack: { high_threshold: 0.5, low_threshold: 0.1, new_track_threshold: 0.65, match_iou: 0.3, max_missed_frames: 30 },
   zones: {
-    acquisition_zone_start_x: { value: 0.1, normalized: true },
-    classification_line_x: { value: 0.75, normalized: true },
-    post_classification_zone: { value: 0.95, normalized: true },
+    roi_left: { value: 0.15, normalized: true }, roi_right: { value: 0.85, normalized: true },
+    roi_top: { value: 0.05, normalized: true }, roi_bottom: { value: 0.95, normalized: true },
+    entry_zone_height: { value: 0.12, normalized: true }, exit_zone_height: { value: 0.12, normalized: true },
+  },
+  tracking: {
+    strict_entry_gating: false, roi_boundary_tolerance_ratio: 0.02,
+    minimum_bbox_width_ratio: 0.025, minimum_bbox_height_ratio: 0.025,
+    minimum_bbox_area_ratio: 0.003, maximum_bbox_area_ratio: 0.25, maintenance_size_tolerance: 0.5,
+    minimum_confirmation_hits: 3, motion_window_frames: 6, minimum_downward_displacement_ratio: 0.003,
+    maximum_upward_displacement_ratio: 0.01, stationary_tolerance_ratio: 0.002,
+    maximum_stationary_frames: 12, debug_diagnostics: false,
   },
   capture: {
     target_capture_percentages: [0.2, 0.4, 0.6, 0.8], target_views: 4, minimum_frame_gap: 2,
-    crop_margin: 0.1, sharpness_threshold: 60, minimum_crop_width: 32, minimum_crop_height: 32, maximum_permitted_overlap: 0.25,
+    crop_margin: 0, sharpness_threshold: 60, minimum_crop_width: 32, minimum_crop_height: 32, maximum_permitted_overlap: 0.25,
   },
   segmentation: { queue_size: 16, workers: 2 },
   classification: { stationary_delay_seconds: 0.1, timeout_seconds: 2, minimum_views: 2, confidence_threshold: 0.55 },
-  retention: { stale_track_frames: 45, release_after_seconds: 5 },
+  retention: { stale_track_frames: 30, release_after_seconds: 5 },
   output: { results_directory: 'data/results', logging_directory: 'data/logs', debug_save_images: false },
   windows: { cpu_threads: 8, live_max_fps: 30 },
 }
@@ -56,11 +70,13 @@ const formats = [
   { format: 'torchscript', extensions: ['.torchscript'], available: true, runtime: 'PyTorch', accelerated: true, accelerator: 'CUDA' },
   { format: 'onnx', extensions: ['.onnx'], available: true, runtime: 'ONNX Runtime', accelerated: true, accelerator: 'CUDA' },
   { format: 'engine', extensions: ['.engine'], available: false, runtime: 'TensorRT', accelerated: false, accelerator: 'CUDA' },
+  { format: 'locate-anything', extensions: ['.locateanything.json'], available: true, runtime: 'NVIDIA LocateAnything', accelerated: true, accelerator: 'CUDA + CPU offload' },
+  { format: 'grounding-dino', extensions: ['.groundingdino.json'], available: true, runtime: 'Hugging Face Transformers', accelerated: true, accelerator: 'CUDA' },
 ]
 let pipelineFrame = 0
 
 function pipelineSnapshot() {
-  if (pipelineFrame === 0) return { frameId: 0, tracks: [], queueSize: 0, droppedSegmentationJobs: 0, detectorFps: 0, segmentationLatencyMs: 0, classificationLatencyMs: 0, config: pipelineConfig }
+  if (pipelineFrame === 0) return { frameId: 0, tracks: [], queueSize: 0, droppedSegmentationJobs: 0, detectorFps: 0, segmentationLatencyMs: 0, classificationLatencyMs: 0, completedCount: 0, classCounts: {}, trackingDiagnostics: [], config: pipelineConfig }
   const progress = Math.min(1, pipelineFrame / 32)
   const views = Math.min(4, Math.floor(progress * 5))
   const classified = progress >= 0.82
@@ -68,18 +84,22 @@ function pipelineSnapshot() {
     frameId: pipelineFrame, sourceWidth: 1280, sourceHeight: 720,
     tracks: [{
       trackId: 1,
-      currentBoundingBox: { classId: 0, label: 'naartjie', confidence: 0.94, x: 65 + progress * 1040, y: 250, width: 150, height: 145, trackId: 1, mask: null },
+      currentBoundingBox: { classId: 0, label: 'naartjie', confidence: 0.94, x: 565, y: 20 + progress * 590, width: 150, height: 105, trackId: 1, mask: null },
       detectionConfidence: 0.94, firstSeenFrame: 1, lastSeenFrame: pipelineFrame,
-      state: classified ? 'CLASSIFIED' : progress >= 0.75 ? 'WAITING_FOR_CLASSIFICATION' : 'ACQUIRING',
+      state: classified ? 'COMPLETED' : progress >= 0.75 ? 'WAITING_FOR_CLASSIFICATION' : progress < 0.1 ? 'TENTATIVE' : 'ACQUIRING',
+      confirmationHits: Math.min(3, pipelineFrame), confirmed: pipelineFrame >= 3,
+      hasCurrentObservation: !classified, motionStatus: 'DOWN', sizeStatus: 'VALID',
       acquisitionZoneProgress: progress,
       capturedViews: Array.from({ length: views }, (_, index) => ({ frameId: index * 5 + 1, viewId: index, zoneProgress: (index + 1) * 0.2, sharpness: 96, segmentationStatus: 'completed' })),
       segmentationResults: [], finalClass: classified ? 'Class 2' : null, finalClassId: classified ? 1 : null,
       finalConfidence: classified ? 0.87 : 0, incompleteEvidence: false, classificationTimestamp: classified ? new Date().toISOString() : '',
       messages: [], viewsCaptured: views, viewsUsed: classified ? 4 : 0, segmentationCompleted: views,
-      totalVisibleDefectArea: classified ? 214 : 0, classificationLatencyMs: classified ? 780 : 0,
+      totalVisibleDefectArea: classified ? 214 : 0, classificationCompleted: classified, counted: classified, exited: classified,
+      failureReason: null, classificationLatencyMs: classified ? 780 : 0,
     }],
     queueSize: Math.max(0, views - 2), droppedSegmentationJobs: 0, detectorFps: 7.8,
-    segmentationLatencyMs: views ? 84.2 : 0, classificationLatencyMs: classified ? 780 : 0, config: pipelineConfig,
+    segmentationLatencyMs: views ? 84.2 : 0, classificationLatencyMs: classified ? 780 : 0,
+    completedCount: classified ? 1 : 0, classCounts: classified ? { 'Class 2': 1 } : {}, trackingDiagnostics: [], config: pipelineConfig,
   }
 }
 
@@ -129,15 +149,7 @@ const server = createServer(async (request, response) => {
       return json(response, 200, pipelineSnapshot())
     }
 
-    if (request.method === 'POST' && url.pathname === '/api/models') {
-      await drain(request)
-      const model = {
-        ...models[0], id: randomUUID(), name: 'Imported model', active: models.length === 0,
-        sizeBytes: 8_600_000, createdAt: new Date().toISOString(),
-      }
-      models.unshift(model)
-      return json(response, 201, model)
-    }
+    if (request.method === 'POST' && url.pathname === '/api/models/rescan') return json(response, 200, models)
 
     const activate = url.pathname.match(/^\/api\/models\/([A-Za-z0-9_-]+)\/activate$/)
     if (request.method === 'POST' && activate) {
@@ -145,14 +157,6 @@ const server = createServer(async (request, response) => {
       if (!selected) return json(response, 404, { error: 'model not found' })
       models.forEach((model) => { model.active = model.id === selected.id })
       return json(response, 200, selected)
-    }
-
-    const remove = url.pathname.match(/^\/api\/models\/([A-Za-z0-9_-]+)$/)
-    if (request.method === 'DELETE' && remove) {
-      const index = models.findIndex((model) => model.id === remove[1])
-      if (index < 0) return json(response, 404, { error: 'model not found' })
-      models.splice(index, 1)
-      return json(response, 200, { deleted: remove[1] })
     }
 
     if (request.method === 'POST' && url.pathname === '/api/infer') {
@@ -168,7 +172,7 @@ const server = createServer(async (request, response) => {
           { classId: 0, label: 'class_1', confidence: 0.93, x: 126, y: 94, width: 390, height: 430, trackId: null, mask: null },
           { classId: 1, label: 'class_2', confidence: 0.78, x: 710, y: 205, width: 260, height: 285, trackId: null, mask: null },
         ],
-        classifications: [], tensors: [],
+        points: [], classifications: [], tensors: [], answer: '',
         timing: {
           decodeMs: 3.2, preprocessMs: 5.6, inferenceMs: 72.4, detectionNmsMs: 2.8,
           maskReconstructionMs: 8.3, trackingMs: 0, queueWaitMs: 0, gradingMs: 0, backendTotalMs: 92.3,

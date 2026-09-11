@@ -29,4 +29,4 @@ if (-not (Test-Path -LiteralPath $frontendIndex -PathType Leaf)) {
 
 Write-Host ""
 Write-Host "Frontend build complete: $frontendIndex"
-Write-Host "Run scripts\build_windows.ps1 to compile the Vulkan backend, or scripts\run_windows.ps1 if it is already built."
+Write-Host "Run scripts\build_inference_runner_windows.ps1 to compile the Vulkan backend, or scripts\run_windows.ps1 if it is already built."

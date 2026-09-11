@@ -4,17 +4,18 @@
 
 The public application remains a C++17 service with the existing React/TypeScript dashboard and conveyor pipeline. Model execution is selected per artifact:
 
-- verified NCNN packages run in-process through the native Vulkan engine;
-- compatible direct artifacts run through a private Ultralytics service bound only to `127.0.0.1`;
+- detected NCNN export packages run in-process through the native Vulkan engine;
+- compatible artifacts discovered below `models/` run through a private Ultralytics service bound only to `127.0.0.1`;
+- pinned Grounding DINO and LocateAnything directories run through dedicated Transformers backends in the private service;
 - the private service delegates to PyTorch, ONNX Runtime, TensorRT, or another installed export runtime and reports the actual accelerator.
 
-This preserves the low-level NCNN path while allowing a normal `.pt` model—or another supported export—to be imported without conversion.
+This preserves the low-level NCNN path while allowing a normal `.pt` model—or another supported export—to be used directly from the filesystem without conversion or an import copy.
 
 ## Hardware mapping
 
 | Laptop resource | Application use |
 | --- | --- |
-| RTX 4060 Laptop GPU / CUDA | PyTorch `.pt`, TorchScript, ONNX Runtime GPU, and optional TensorRT |
+| RTX 4060 Laptop GPU / CUDA | PyTorch `.pt`, TorchScript, ONNX Runtime GPU, Grounding DINO, LocateAnything, and optional TensorRT |
 | RTX 4060 Laptop GPU / Vulkan | native NCNN models |
 | Ryzen 7 7735HS | image decode, tracking, native post-processing, HTTP, file I/O, and optional CPU runtimes |
 | 32 GB RAM | loaded models, decoded frames, queues, and result data |
@@ -29,7 +30,7 @@ No CUDA Toolkit is needed for the tested PyTorch and ONNX wheels. TensorRT has i
 Webcam / video / image
         |
         v
-React capture and model library
+React capture and grouped discovered-model library
         |
         v
 C++ HTTP API + persistent pipeline state
@@ -41,6 +42,7 @@ C++ HTTP API + persistent pipeline state
                                       +-> PyTorch / CUDA         |
                                       +-> ONNX Runtime / CUDA    |
                                       +-> TensorRT / CUDA        |
+                                      +-> Transformers grounding |
                                       +-> optional CPU runtime   |
                                                                 v
                                          normalized result JSON
@@ -48,25 +50,16 @@ C++ HTTP API + persistent pipeline state
 
 Both engines implement the same C++ `InferenceEngine` result contract. Detection boxes, class scores, segmentation masks, and timing therefore continue into the same workbench, tracker, crop scheduler, multi-view grader, and benchmark endpoints.
 
-## Capability and import contract
+## Capability and discovery contract
 
-The private service reports installed modules and execution providers through `/health`; the C++ API merges those with native NCNN support in `/api/capabilities`. The frontend derives its accepted file extensions from that response.
+The private service reports installed modules and execution providers through `/health`; the C++ API merges those with native NCNN support in `/api/capabilities`. It recursively discovers supported single-file artifacts and complete export directories below `models/`, skipping hidden caches and collapsing package sidecars and checkpoint shards into one record.
 
-Direct artifacts use generated schema-version-3 metadata. Import is transactional:
+Discovery metadata is cached by artifact size and modification time. PyTorch tensors, Safetensors headers, export metadata, and NCNN metadata are inspected to derive the task, input dimensions, labels, on-disk precision, and quantization mode. Unknown precision is reported honestly. Stable IDs are derived from relative paths, so active-model persistence survives restarts and file timestamps changing.
 
-1. copy into a temporary model directory;
-2. atomically move it into local storage;
-3. resolve the format and runtime;
-4. load and warm the artifact on the selected device;
-5. persist detected task, labels, format, runtime, and accelerator;
-6. remove the stored copy if validation fails.
-
-Directory-based exports are uploaded as ZIP archives. Extraction rejects absolute paths, parent traversal, more than 4,096 entries, and expanded content above 4 GB. The model service accepts paths only beneath its configured model root. Executable checkpoint formats require a trusted-source acknowledgement.
-
-Verified NCNN packages continue to use schema version 2, provenance hashes, precision flags, named blobs, and the original three-file import contract.
+The C++ process accepts only discovered paths that resolve inside the configured model root. Activation then loads and warms the selected artifact on its chosen device. The `models/` directory is therefore the executable-checkpoint trust boundary; the public API has no upload or delete operation.
 
 ## Process and concurrency model
 
 `run_windows.ps1` starts the model service first, waits for CUDA/runtime health, then starts the public C++ service. The model process is hidden, loopback-only, and stopped with the application. The C++ model store serializes inference across active and pipeline engines, so both native and delegated models preserve the pipeline’s detector-priority ordering.
 
-Persistent models and result state remain under `data/`, while logs from the private service are under `data/logs/`. Raspberry Pi services, ARM flags, sysfs telemetry, and Linux deployment files are intentionally absent.
+Model artifacts remain under `models/`. The active model, results, and other runtime state remain under `data/`, while logs from the private service are under `data/logs/`. Raspberry Pi services, ARM flags, sysfs telemetry, and Linux deployment files are intentionally absent.

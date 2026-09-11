@@ -1,8 +1,6 @@
 [CmdletBinding()]
 param(
     [string]$ModelPath = "",
-    [ValidateSet("yolo-detect", "yolo-segment", "classification")]
-    [string]$Task = "yolo-detect",
     [int]$ApiPort = 18080,
     [int]$ModelServicePort = 18091
 )
@@ -17,6 +15,7 @@ $frontend = Join-Path $rootDir "frontend\dist"
 $pipeline = Join-Path $rootDir "config\pipeline.example.json"
 $testRoot = Join-Path $rootDir "build\integration-data"
 $modelsRoot = Join-Path $testRoot "models"
+$stateRoot = Join-Path $testRoot "state"
 $imagePath = Join-Path $testRoot "blank.jpg"
 
 foreach ($required in @($ModelPath, $python, $runner)) {
@@ -29,6 +28,8 @@ if (-not $resolvedTestRoot.StartsWith($buildPrefix, [StringComparison]::OrdinalI
 }
 if (Test-Path -LiteralPath $resolvedTestRoot) { Remove-Item -LiteralPath $resolvedTestRoot -Recurse -Force }
 New-Item -ItemType Directory -Path $modelsRoot -Force | Out-Null
+New-Item -ItemType Directory -Path $stateRoot -Force | Out-Null
+Copy-Item -LiteralPath $ModelPath -Destination (Join-Path $modelsRoot ([IO.Path]::GetFileName($ModelPath)))
 
 Add-Type -AssemblyName System.Drawing
 $bitmap = New-Object System.Drawing.Bitmap 640,640
@@ -60,29 +61,28 @@ try {
     $serviceArguments = @(
         ('"' + (Join-Path $rootDir "backend\python\model_service.py") + '"'),
         "--host", "127.0.0.1", "--port", $ModelServicePort.ToString(),
-        "--models-root", ('"' + $modelsRoot + '"')
+        "--models-root", ('"' + $modelsRoot + '"'),
+        "--state-root", ('"' + $stateRoot + '"')
     )
     $modelProcess = Start-Process -FilePath $python -ArgumentList $serviceArguments -WorkingDirectory $rootDir -NoNewWindow -PassThru
     $modelHealth = Wait-Json "http://127.0.0.1:$ModelServicePort/health" $modelProcess
 
     $runnerArguments = @(
         "--host", "127.0.0.1", "--port", $ApiPort.ToString(),
-        "--data", ('"' + $modelsRoot + '"'), "--static", ('"' + $frontend + '"'),
+        "--data", ('"' + $stateRoot + '"'), "--models", ('"' + $modelsRoot + '"'),
+        "--static", ('"' + $frontend + '"'),
         "--pipeline-config", ('"' + $pipeline + '"'),
         "--python-backend", "http://127.0.0.1:$ModelServicePort"
     )
     $runnerProcess = Start-Process -FilePath $runner -ArgumentList $runnerArguments -WorkingDirectory $rootDir -NoNewWindow -PassThru
     $health = Wait-Json "http://127.0.0.1:$ApiPort/api/health" $runnerProcess
 
-    $importJson = & curl.exe --silent --show-error --fail-with-body `
-        -F "model=@$ModelPath" -F "name=Model integration test" -F "task=$Task" `
-        -F "precision=fp32" -F "trustedCheckpoint=true" -F "inputWidth=640" -F "inputHeight=640" `
-        "http://127.0.0.1:$ApiPort/api/models"
-    if ($LASTEXITCODE -ne 0) { throw "Model import request failed: $importJson" }
-    $imported = $importJson | ConvertFrom-Json
+    $detected = Invoke-RestMethod -Uri "http://127.0.0.1:$ApiPort/api/models" -TimeoutSec 120
+    if ($detected.Count -ne 1) { throw "Expected one automatically detected model, found $($detected.Count)." }
+    $selected = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$ApiPort/api/models/$($detected[0].id)/activate" -TimeoutSec 300
 
     $inferenceJson = & curl.exe --silent --show-error --fail-with-body `
-        -F "modelId=$($imported.id)" -F "confidence=0.25" -F "iou=0.5" -F "image=@$imagePath" `
+        -F "modelId=$($selected.id)" -F "confidence=0.25" -F "iou=0.5" -F "image=@$imagePath" `
         "http://127.0.0.1:$ApiPort/api/infer"
     if ($LASTEXITCODE -ne 0) { throw "Inference request failed: $inferenceJson" }
     $inference = $inferenceJson | ConvertFrom-Json
@@ -92,8 +92,10 @@ try {
         GPU = $health.gpuDevice
         CUDA = $modelHealth.cudaAvailable
         AvailableFormats = (($health.formats | Where-Object available).format -join ", ")
-        ImportedFormat = $imported.format
-        ImportedBackend = $imported.backend
+        DetectedFormat = $selected.format
+        DetectedPrecision = $selected.precision
+        DetectedQuantization = $selected.quantization.label
+        SelectedBackend = $selected.backend
         InferenceTask = $inference.task
         InferenceMilliseconds = [Math]::Round($inference.timing.backendTotalMs, 2)
     } | Format-List

@@ -8,8 +8,10 @@
     "build": "npm --prefix frontend run build",
     "check": "npm --prefix frontend run check",
     "setup:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup_windows.ps1 -InstallModelRuntimes",
+    "setup:locate-anything": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup_locate_anything.ps1",
+    "setup:grounding-dino": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup_grounding_dino.ps1",
     "setup:tensorrt": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup_windows.ps1 -InstallModelRuntimes -InstallTensorRT",
-    "build:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_windows.ps1",
+    "build:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_inference_runner_windows.ps1",
     "start:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run_windows.ps1",
     "status:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/status_windows.ps1",
     "test:formats": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test_model_formats.ps1"

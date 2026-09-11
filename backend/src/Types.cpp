@@ -1,5 +1,7 @@
 #include "runner/Types.hpp"
 
+#include "runner/DetectorManifest.hpp"
+
 #include <algorithm>
 #include <chrono>
 #include <cctype>
@@ -13,17 +15,23 @@ namespace {
 
 ModelTask parse_task(const std::string& value) {
     if (value == "classification") return ModelTask::Classification;
+    if (value == "object-detection") return ModelTask::ObjectDetection;
     if (value == "yolo-detect") return ModelTask::YoloDetect;
     if (value == "yolo-segment") return ModelTask::YoloSegment;
+    if (value == "vision-grounding") return ModelTask::VisionGrounding;
     if (value == "raw") return ModelTask::Raw;
-    throw std::invalid_argument("task must be classification, yolo-detect, yolo-segment, or raw");
+    throw std::invalid_argument("task must be object-detection, classification, yolo-detect, yolo-segment, vision-grounding, or raw");
 }
 
 ModelPrecision parse_precision(const std::string& value) {
     if (value == "fp32") return ModelPrecision::FP32;
     if (value == "fp16") return ModelPrecision::FP16;
+    if (value == "bf16") return ModelPrecision::BF16;
+    if (value == "fp8") return ModelPrecision::FP8;
     if (value == "int8") return ModelPrecision::INT8;
-    throw std::invalid_argument("precision must be fp32, fp16, or int8");
+    if (value == "int4") return ModelPrecision::INT4;
+    if (value == "unknown") return ModelPrecision::Unknown;
+    throw std::invalid_argument("precision must be fp32, fp16, bf16, fp8, int8, int4, or unknown");
 }
 
 bool is_sha256(const std::string& value) {
@@ -43,8 +51,10 @@ std::array<float, 3> parse_triplet(const json& value, const std::array<float, 3>
 std::string task_name(ModelTask task) {
     switch (task) {
         case ModelTask::Classification: return "classification";
+        case ModelTask::ObjectDetection: return "object-detection";
         case ModelTask::YoloDetect: return "yolo-detect";
         case ModelTask::YoloSegment: return "yolo-segment";
+        case ModelTask::VisionGrounding: return "vision-grounding";
         case ModelTask::Raw: return "raw";
     }
     return "raw";
@@ -54,13 +64,48 @@ std::string precision_name(ModelPrecision precision) {
     switch (precision) {
         case ModelPrecision::FP32: return "fp32";
         case ModelPrecision::FP16: return "fp16";
+        case ModelPrecision::BF16: return "bf16";
+        case ModelPrecision::FP8: return "fp8";
         case ModelPrecision::INT8: return "int8";
+        case ModelPrecision::INT4: return "int4";
+        case ModelPrecision::Unknown: return "unknown";
     }
     return "fp32";
 }
 
 ModelConfig ModelConfig::from_json(const json& value, bool allow_legacy) {
     ModelConfig config;
+    if (value.value("task", "") == "object-detection") {
+        const DetectorManifest manifest = DetectorManifest::from_json(value);
+        config.schema_version = manifest.schema_version;
+        config.id = manifest.id;
+        config.name = manifest.name;
+        config.task = ModelTask::ObjectDetection;
+        config.model_family = manifest.model_family;
+        config.backend = manifest.backend;
+        config.format = manifest.backend;
+        config.artifact_file = manifest.model_file;
+        config.framework = manifest.model_family;
+        config.accelerator = manifest.backend == "tensorrt" ? "CUDA" : "CPU";
+        config.input_width = manifest.input.width;
+        config.input_height = manifest.input.height;
+        config.input_blob = manifest.input.name;
+        config.mean = manifest.input.mean;
+        config.norm = manifest.input.scale;
+        config.labels = manifest.labels;
+        config.threads = manifest.threads;
+        config.runtime_name = manifest.backend == "tensorrt" ? "TensorRT" : "TFLite/LiteRT";
+        config.runtime_version = "compiled";
+        config.precision = manifest.input.data_type == "float16" ? ModelPrecision::FP16
+            : manifest.input.data_type == "float32" ? ModelPrecision::FP32 : ModelPrecision::INT8;
+        config.output_blobs.clear();
+        for (const auto& output : manifest.outputs) config.output_blobs.push_back(output.name);
+        config.detector_manifest = value;
+        config.artifact_verified = true;
+        config.created_at = value.value("createdAt", "");
+        validate_model_config(config);
+        return config;
+    }
     config.schema_version = value.value("schemaVersion", 1);
     if (config.schema_version < 2) {
         if (!allow_legacy) {
@@ -134,6 +179,11 @@ ModelConfig ModelConfig::from_json(const json& value, bool allow_legacy) {
 }
 
 json ModelConfig::to_json() const {
+    if (schema_version == 4 && !detector_manifest.empty()) {
+        json value = detector_manifest;
+        if (!id.empty()) value["id"] = id;
+        return value;
+    }
     return {
         {"id", id},
         {"name", name},
@@ -176,6 +226,7 @@ json ModelConfig::to_public_json(bool active, std::uintmax_t size_bytes) const {
         {"id", id}, {"name", name}, {"task", task_name(task)},
         {"precision", precision_name(precision)}, {"framework", framework},
         {"format", format}, {"artifactFile", artifact_file}, {"backend", backend},
+        {"modelFamily", model_family},
         {"accelerator", accelerator},
         {"checkpointSha256", checkpoint_sha256}, {"datasetHash", dataset_hash},
         {"splitHash", split_hash}, {"classSchemaHash", class_schema_hash},
@@ -212,6 +263,13 @@ json InferenceResult::to_json() const {
         detection_values.push_back(std::move(detection_value));
     }
 
+    json point_values = json::array();
+    for (const auto& point : points) {
+        point_values.push_back({
+            {"classId", point.class_id}, {"label", point.label}, {"x", point.x}, {"y", point.y},
+        });
+    }
+
     json classification_values = json::array();
     for (const auto& classification : classifications) {
         classification_values.push_back({
@@ -227,11 +285,13 @@ json InferenceResult::to_json() const {
     }
 
     return {
-        {"modelId", model_id}, {"task", task_name(task)},
+        {"modelId", model_id}, {"modelFamily", model_family}, {"backend", backend}, {"task", task_name(task)},
         {"sourceWidth", source_width}, {"sourceHeight", source_height},
         {"detections", std::move(detection_values)},
+        {"points", std::move(point_values)},
         {"classifications", std::move(classification_values)},
         {"tensors", std::move(tensor_values)},
+        {"answer", answer},
         {"timing", {
             {"decodeMs", timing.decode_ms}, {"preprocessMs", timing.preprocess_ms},
             {"inferenceMs", timing.inference_ms},
@@ -245,6 +305,8 @@ json InferenceResult::to_json() const {
 InferenceResult InferenceResult::from_json(const json& value) {
     InferenceResult result;
     result.model_id = value.value("modelId", "");
+    result.model_family = value.value("modelFamily", "");
+    result.backend = value.value("backend", "");
     result.task = parse_task(value.value("task", "raw"));
     result.source_width = value.value("sourceWidth", 0);
     result.source_height = value.value("sourceHeight", 0);
@@ -266,6 +328,11 @@ InferenceResult InferenceResult::from_json(const json& value) {
         }
         result.detections.push_back(std::move(detection));
     }
+    for (const auto& item : value.value("points", json::array())) {
+        result.points.push_back({
+            item.value("classId", 0), item.value("label", ""), item.value("x", 0.0F), item.value("y", 0.0F),
+        });
+    }
     for (const auto& item : value.value("classifications", json::array())) {
         result.classifications.push_back({
             item.value("classId", 0), item.value("label", ""), item.value("score", 0.0F),
@@ -279,6 +346,7 @@ InferenceResult InferenceResult::from_json(const json& value) {
         tensor.total_values = item.value("totalValues", tensor.values.size());
         result.tensors.push_back(std::move(tensor));
     }
+    result.answer = value.value("answer", "");
     if (value.contains("timing")) {
         const auto& timing = value.at("timing");
         result.timing.decode_ms = timing.value("decodeMs", 0.0);
@@ -330,6 +398,10 @@ std::string make_model_id(const std::string& name) {
 }
 
 void validate_model_config(const ModelConfig& config) {
+    if (config.schema_version == 4) {
+        (void)DetectorManifest::from_json(config.detector_manifest);
+        return;
+    }
     if (config.name.empty() || config.name.size() > 100) throw std::invalid_argument("model name must be between 1 and 100 characters");
     if (config.input_width < 32 || config.input_width > 4096 || config.input_height < 32 || config.input_height > 4096) {
         throw std::invalid_argument("input dimensions must be between 32 and 4096");
@@ -346,9 +418,6 @@ void validate_model_config(const ModelConfig& config) {
     }
     if (config.format == "ncnn" && config.task == ModelTask::YoloSegment && config.output_blobs.size() < 2) {
         throw std::invalid_argument("YOLO segmentation requires detection and prototype output blobs");
-    }
-    if (config.format == "ncnn" && config.task == ModelTask::YoloSegment && config.labels != std::vector<std::string>{"class_1", "class_2", "class_3"}) {
-        throw std::invalid_argument("YOLO defect segmentation labels must be ordered class_1, class_2, class_3");
     }
     if (config.mask_threshold <= 0.0F || config.mask_threshold >= 1.0F) {
         throw std::invalid_argument("maskThreshold must be between 0 and 1");
@@ -368,13 +437,31 @@ void validate_model_config(const ModelConfig& config) {
         }
         if (!config.artifact_verified) throw std::invalid_argument("artifactVerification.verified must be true");
     } else if (config.schema_version == 3) {
-        if (config.format.empty() || config.format == "ncnn") throw std::invalid_argument("direct model imports require a non-NCNN artifact format");
-        if (config.artifact_file.empty()) throw std::invalid_argument("direct model imports require an artifact file");
-        if (config.backend != "ultralytics") throw std::invalid_argument("direct model imports require the Ultralytics backend");
+        if (config.format.empty() || config.format == "ncnn") throw std::invalid_argument("direct model records require a non-NCNN artifact format");
+        if (config.artifact_file.empty()) throw std::invalid_argument("direct model records require an artifact file");
+        if (config.format == "locate-anything") {
+            if (config.backend != "locate-anything" || config.task != ModelTask::VisionGrounding || !config.trusted_checkpoint) {
+                throw std::invalid_argument("LocateAnything imports require the vision-grounding task and trusted LocateAnything backend");
+            }
+            if (config.precision != ModelPrecision::BF16) throw std::invalid_argument("LocateAnything requires BF16 precision");
+        } else if (config.format == "grounding-dino") {
+            if (config.backend != "grounding-dino" || config.task != ModelTask::VisionGrounding) {
+                throw std::invalid_argument("Grounding DINO imports require the vision-grounding task and Grounding DINO backend");
+            }
+            if (config.precision != ModelPrecision::FP32) throw std::invalid_argument("Grounding DINO requires FP32 precision");
+        } else if (config.format == "dfine") {
+            if (config.backend != "dfine" || config.task != ModelTask::YoloDetect || !config.trusted_checkpoint) {
+                throw std::invalid_argument("D-FINE imports require the yolo-detect task and trusted D-FINE backend");
+            }
+            if (config.precision != ModelPrecision::FP32) throw std::invalid_argument("D-FINE checkpoints require FP32 precision");
+        } else if (config.backend != "ultralytics") {
+            throw std::invalid_argument("direct model records require the Ultralytics backend");
+        }
     } else if (!config.legacy_unverified) {
-        throw std::invalid_argument("schemaVersion must be 2 for NCNN packages or 3 for direct model artifacts");
+        throw std::invalid_argument("schemaVersion must be 2 for NCNN packages, 3 for direct artifacts, or 4 for production detectors");
     }
     if (config.format != "ncnn") return;
+    if (config.precision == ModelPrecision::BF16) throw std::invalid_argument("NCNN manifests do not support BF16 precision");
     if (config.precision == ModelPrecision::FP32) {
         if (config.use_int8_inference || config.use_int8_storage || config.use_fp16_storage || config.use_fp16_arithmetic) {
             throw std::invalid_argument("FP32 runtime flags must disable INT8 and FP16 storage/arithmetic");

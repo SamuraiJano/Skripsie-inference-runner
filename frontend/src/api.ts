@@ -1,4 +1,4 @@
-import type { DirectModelDraft, InferenceResult, ModelManifestDraft, PipelineConfig, PipelineSnapshot, RuntimeHealth, StoredModel } from './types'
+import type { GroundingRequest, InferenceResult, PipelineCapture, PipelineConfig, PipelineSnapshot, RuntimeHealth, StoredModel } from './types'
 
 class ApiError extends Error {
   constructor(
@@ -10,6 +10,9 @@ class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  // All browser calls are same-origin /api requests. In development Vite
+  // proxies them to :8080; in production the C++ service serves React and the
+  // API from :8080. The browser never connects to the private Python :8091.
   const response = await fetch(path, init)
   const contentType = response.headers.get('content-type') ?? ''
   const payload = contentType.includes('application/json') ? await response.json() : await response.text()
@@ -26,31 +29,20 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   health: () => request<RuntimeHealth>('/api/health'),
   models: () => request<StoredModel[]>('/api/models'),
-  addModel: (manifest: ModelManifestDraft, paramFile: File, binFile: File) => {
-    const body = new FormData()
-    body.append('manifest', new Blob([JSON.stringify(manifest)], { type: 'application/json' }), 'manifest.json')
-    body.append('param', paramFile)
-    body.append('bin', binFile)
-    return request<StoredModel>('/api/models', { method: 'POST', body })
-  },
-  addArtifact: (draft: DirectModelDraft, modelFile: File) => {
-    const body = new FormData()
-    body.append('model', modelFile)
-    body.append('name', draft.name)
-    body.append('task', draft.task)
-    body.append('precision', draft.precision)
-    body.append('trustedCheckpoint', String(draft.trustedCheckpoint))
-    body.append('inputWidth', String(draft.inputWidth))
-    body.append('inputHeight', String(draft.inputHeight))
-    return request<StoredModel>('/api/models', { method: 'POST', body })
-  },
+  rescanModels: () => request<StoredModel[]>('/api/models/rescan', { method: 'POST' }),
   activateModel: (id: string) => request<StoredModel>(`/api/models/${encodeURIComponent(id)}/activate`, { method: 'POST' }),
-  deleteModel: (id: string) => request<{ deleted: string }>(`/api/models/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  infer: async (modelId: string, image: Blob, confidence: number, iou: number) => {
+  infer: async (modelId: string, image: Blob, confidence: number, iou: number, grounding?: GroundingRequest) => {
+    // Do not set Content-Type manually for FormData. fetch adds multipart/form-
+    // data together with the generated boundary required by the C++ parser.
     const body = new FormData()
     body.append('modelId', modelId)
     body.append('confidence', String(confidence))
     body.append('iou', String(iou))
+    if (grounding) {
+      body.append('prompt', grounding.prompt)
+      body.append('groundingMode', grounding.groundingMode)
+      body.append('generationMode', grounding.generationMode)
+    }
     body.append('image', image, image instanceof File ? image.name : 'video-frame.jpg')
     const started = performance.now()
     const result = await request<InferenceResult>('/api/infer', { method: 'POST', body })
@@ -59,8 +51,11 @@ export const api = {
   },
   pipeline: () => request<PipelineSnapshot>('/api/pipeline'),
   pipelineConfig: () => request<PipelineConfig>('/api/pipeline/config'),
+  pipelineCaptures: () => request<PipelineCapture[]>('/api/pipeline/captures'),
   resetPipeline: () => request<PipelineSnapshot>('/api/pipeline/reset', { method: 'POST' }),
   pipelineFrame: (image: Blob, frameId: number) => {
+    // A monotonically increasing frame ID lets the stateful native pipeline
+    // reject reordered/duplicate frames before updating any tracks.
     const body = new FormData()
     body.append('frameId', String(frameId))
     body.append('image', image, `frame-${frameId}.jpg`)

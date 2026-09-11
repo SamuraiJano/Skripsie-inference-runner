@@ -1,6 +1,7 @@
 #include "runner/Engine.hpp"
 
 #include <cstdlib>
+#include <cctype>
 #include <iomanip>
 #include <memory>
 #include <sstream>
@@ -77,17 +78,33 @@ json parse_response(const httplib::Result& response, const std::string& action) 
     return value;
 }
 
+std::string percent_encode(const std::string& value) {
+    std::ostringstream output;
+    output << std::uppercase << std::hex;
+    for (const unsigned char ch : value) {
+        if (std::isalnum(ch) || ch == '-' || ch == '_' || ch == '.' || ch == '~') {
+            output << static_cast<char>(ch);
+        } else {
+            output << '%' << std::setw(2) << std::setfill('0') << static_cast<int>(ch);
+        }
+    }
+    return output.str();
+}
+
 class PythonEngine final : public InferenceEngine {
 public:
     PythonEngine(ModelConfig config, const fs::path& artifact_path) : config_(std::move(config)) {
+        // Model loading is a private process boundary.  The Python registry
+        // returns normalized metadata and reference-counts duplicate loads.
         json request = {
             {"modelId", config_.id},
             {"path", fs::absolute(artifact_path).u8string()},
             {"task", task_name(config_.task)},
             {"inputWidth", config_.input_width},
             {"inputHeight", config_.input_height},
+            {"trustedCheckpoint", config_.trusted_checkpoint},
         };
-        auto client = client_for_backend();
+        auto client = client_for_backend(config_.format == "locate-anything" ? 1800 : 300);
         metadata_ = parse_response(client->Post("/models/load", request.dump(), "application/json"), "model activation");
     }
 
@@ -102,12 +119,25 @@ public:
         }
     }
 
-    InferenceResult infer(const std::vector<unsigned char>& encoded_image, float confidence, float iou) override {
+    InferenceResult infer(
+        const std::vector<unsigned char>& encoded_image,
+        float confidence,
+        float iou,
+        const GroundingRequest& grounding
+    ) override {
+        // The public /api/infer route parsed multipart/form-data already. Send
+        // only encoded image bytes internally and put scalar options in the
+        // query string; Python returns the shared InferenceResult JSON schema.
         std::ostringstream path;
         path << "/models/" << config_.id << "/infer?confidence=" << std::setprecision(6) << confidence
              << "&iou=" << iou << "&maskThreshold=" << config_.mask_threshold;
+        if (config_.task == ModelTask::VisionGrounding) {
+            path << "&prompt=" << percent_encode(grounding.prompt)
+                 << "&groundingMode=" << percent_encode(grounding.mode)
+                 << "&generationMode=" << percent_encode(grounding.generation_mode);
+        }
         const std::string body(reinterpret_cast<const char*>(encoded_image.data()), encoded_image.size());
-        auto client = client_for_backend(120);
+        auto client = client_for_backend(config_.task == ModelTask::VisionGrounding ? 900 : 120);
         const json response = parse_response(client->Post(path.str(), body, "application/octet-stream"), "inference");
         return InferenceResult::from_json(response);
     }
@@ -132,6 +162,13 @@ json python_backend_health() {
     } catch (const std::exception& error) {
         return {{"status", "unavailable"}, {"error", error.what()}, {"formats", json::array()}};
     }
+}
+
+json discover_models() {
+    auto client = client_for_backend(120);
+    const json result = parse_response(client->Get("/models/discover"), "model discovery");
+    if (!result.is_array()) throw std::runtime_error("model discovery returned an invalid model list");
+    return result;
 }
 
 json model_format_capabilities() {

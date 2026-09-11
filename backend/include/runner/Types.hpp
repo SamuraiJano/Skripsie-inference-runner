@@ -15,12 +15,14 @@ using json = nlohmann::json;
 
 enum class ModelTask {
     Classification,
+    ObjectDetection,
     YoloDetect,
     YoloSegment,
+    VisionGrounding,
     Raw,
 };
 
-enum class ModelPrecision { FP32, FP16, INT8 };
+enum class ModelPrecision { FP32, FP16, BF16, FP8, INT8, INT4, Unknown };
 
 struct ModelConfig {
     std::string id;
@@ -44,6 +46,8 @@ struct ModelConfig {
     std::string format = "ncnn";
     std::string artifact_file;
     std::string backend = "ncnn";
+    std::string model_family;
+    json detector_manifest = json::object();
     std::string accelerator = "Vulkan";
     bool trusted_checkpoint = false;
     std::string checkpoint_sha256;
@@ -95,6 +99,19 @@ struct ClassificationScore {
     float score = 0.0F;
 };
 
+struct GroundingPoint {
+    int class_id = 0;
+    std::string label;
+    float x = 0.0F;
+    float y = 0.0F;
+};
+
+struct GroundingRequest {
+    std::string prompt;
+    std::string mode = "detect";
+    std::string generation_mode = "hybrid";
+};
+
 struct RawTensor {
     std::string name;
     std::vector<int> shape;
@@ -116,12 +133,16 @@ struct Timing {
 
 struct InferenceResult {
     std::string model_id;
+    std::string model_family;
+    std::string backend;
     ModelTask task = ModelTask::Raw;
     int source_width = 0;
     int source_height = 0;
     std::vector<Detection> detections;
+    std::vector<GroundingPoint> points;
     std::vector<ClassificationScore> classifications;
     std::vector<RawTensor> tensors;
+    std::string answer;
     Timing timing;
 
     static InferenceResult from_json(const json& value);

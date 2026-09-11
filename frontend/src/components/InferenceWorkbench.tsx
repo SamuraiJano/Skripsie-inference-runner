@@ -1,7 +1,7 @@
 import { Clock3, Crosshair, ImagePlus, Layers3, Play, ScanLine, Sparkles, X } from 'lucide-react'
 import { ChangeEvent, DragEvent, useEffect, useRef, useState } from 'react'
 import { api, errorMessage } from '../api'
-import type { Detection, InferenceResult, StoredModel } from '../types'
+import type { Detection, GroundingMode, GroundingPoint, InferenceResult, StoredModel } from '../types'
 
 interface Props {
   activeModel: StoredModel | undefined
@@ -30,6 +30,9 @@ function MaskOverlay({ result }: { result: InferenceResult }) {
       const blue = Number.parseInt(color.slice(5, 7), 16)
       let cursor = 0
       let foreground = false
+      // Python sends alternating row-major run lengths beginning with a
+      // background run. Rebuild only foreground pixels into a transparent
+      // RGBA layer; the source image and SVG boxes remain separate layers.
       for (const count of mask.counts) {
         const end = Math.min(cursor + Math.max(0, count), mask.width * mask.height)
         if (foreground) {
@@ -75,6 +78,25 @@ export function DetectionOverlay({ detections, width, height }: { detections: De
   )
 }
 
+export function PointOverlay({ points, width, height }: { points: GroundingPoint[]; width: number; height: number }) {
+  const radius = Math.max(5, width / 110)
+  return (
+    <svg className="detection-overlay" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+      {points.map((point, index) => {
+        const color = boxColors[point.classId % boxColors.length]
+        const strokeWidth = Math.max(1.5, width / 500)
+        return (
+          <g key={`${point.label}-${index}`}>
+            <circle cx={point.x} cy={point.y} r={radius} fill={color} fillOpacity="0.3" stroke={color} strokeWidth={strokeWidth} />
+            <line x1={point.x - radius * 1.5} y1={point.y} x2={point.x + radius * 1.5} y2={point.y} stroke={color} strokeWidth={strokeWidth} />
+            <line x1={point.x} y1={point.y - radius * 1.5} x2={point.x} y2={point.y + radius * 1.5} stroke={color} strokeWidth={strokeWidth} />
+          </g>
+        )
+      })}
+    </svg>
+  )
+}
+
 function TimingDetails({ result }: { result: InferenceResult }) {
   const timing = result.timing
   const rows = [
@@ -106,6 +128,14 @@ export function InferenceWorkbench({ activeModel, online, onError }: Props) {
   const [running, setRunning] = useState(false)
   const [result, setResult] = useState<InferenceResult | null>(null)
   const [dragging, setDragging] = useState(false)
+  const [groundingMode, setGroundingMode] = useState<GroundingMode>('detect')
+  const [prompt, setPrompt] = useState('person, car')
+  const [generationMode, setGenerationMode] = useState<'fast' | 'hybrid' | 'slow'>('hybrid')
+  const isGrounding = activeModel?.task === 'vision-grounding'
+  const isLocateAnything = activeModel?.format === 'locate-anything'
+  const isGroundingDino = activeModel?.format === 'grounding-dino'
+  const promptRequired = isGroundingDino || groundingMode !== 'detect-text'
+  const showsDetectionConfidence = !isGrounding || isGroundingDino
 
   useEffect(() => {
     if (!image) {
@@ -117,7 +147,7 @@ export function InferenceWorkbench({ activeModel, online, onError }: Props) {
     return () => URL.revokeObjectURL(url)
   }, [image])
 
-  useEffect(() => setResult(null), [activeModel?.id, image])
+  useEffect(() => setResult(null), [activeModel?.id, image, groundingMode, prompt, generationMode])
 
   function chooseFile(file?: File) {
     if (!file) return
@@ -143,7 +173,13 @@ export function InferenceWorkbench({ activeModel, online, onError }: Props) {
     if (!image || !activeModel) return
     setRunning(true)
     try {
-      setResult(await api.infer(activeModel.id, image, confidence, iou))
+      setResult(await api.infer(
+        activeModel.id,
+        image,
+        confidence,
+        iou,
+        isGrounding ? { prompt, groundingMode: isGroundingDino ? 'detect' : groundingMode, generationMode } : undefined,
+      ))
     } catch (error) {
       onError(errorMessage(error))
     } finally {
@@ -184,23 +220,82 @@ export function InferenceWorkbench({ activeModel, online, onError }: Props) {
           <img src={previewUrl} alt="Selected inference input" data-testid="inference-source-image" />
           {result && <MaskOverlay result={result} />}
           {result && <DetectionOverlay detections={result.detections} width={result.sourceWidth} height={result.sourceHeight} />}
+          {result && <PointOverlay points={result.points} width={result.sourceWidth} height={result.sourceHeight} />}
           {running && <div className="inference-overlay"><ScanLine size={34} /><strong>Running on device</strong></div>}
           <button className="preview-remove" onClick={() => setImage(null)} aria-label="Remove selected image"><X size={16} /></button>
         </div>
       )}
 
+      {isLocateAnything && (
+        <div className="grounding-controls">
+          <label className="field">
+            <span>Grounding task</span>
+            <select value={groundingMode} onChange={(event) => setGroundingMode(event.target.value as GroundingMode)}>
+              <option value="detect">Detect named categories</option>
+              <option value="ground-single">Ground one instance</option>
+              <option value="ground-multi">Ground all matching instances</option>
+              <option value="detect-text">Detect all scene text</option>
+              <option value="ground-text">Locate specific text</option>
+              <option value="gui-box">Ground GUI element (box)</option>
+              <option value="gui-point">Ground GUI element (point)</option>
+              <option value="point">Point to an object</option>
+            </select>
+          </label>
+          <label className="field grounding-prompt">
+            <span>{groundingMode === 'detect' ? 'Categories (comma separated)' : 'Natural-language prompt'}</span>
+            <input
+              value={prompt}
+              maxLength={1000}
+              disabled={!promptRequired}
+              onChange={(event) => setPrompt(event.target.value)}
+              placeholder={groundingMode === 'detect' ? 'person, car, bicycle' : 'people wearing red shirts'}
+            />
+          </label>
+          <label className="field">
+            <span>Decoding</span>
+            <select value={generationMode} onChange={(event) => setGenerationMode(event.target.value as 'fast' | 'hybrid' | 'slow')}>
+              <option value="hybrid">Hybrid (recommended)</option>
+              <option value="fast">Fast / parallel</option>
+              <option value="slow">Slow / precise</option>
+            </select>
+          </label>
+        </div>
+      )}
+
+      {isGroundingDino && (
+        <div className="grounding-controls">
+          <label className="field">
+            <span>Grounding task</span>
+            <select value="detect" disabled><option value="detect">Detect named categories</option></select>
+          </label>
+          <label className="field grounding-prompt">
+            <span>Categories (comma separated)</span>
+            <input
+              value={prompt}
+              maxLength={1000}
+              onChange={(event) => setPrompt(event.target.value)}
+              placeholder="person, car, bicycle"
+            />
+          </label>
+          <label className="range-control">
+            <span>Box threshold <strong>{confidence.toFixed(2)}</strong></span>
+            <input type="range" min="0.05" max="0.95" step="0.05" value={confidence} onChange={(event) => setConfidence(Number(event.target.value))} />
+          </label>
+        </div>
+      )}
+
       <div className="control-strip">
-        <label className="range-control">
+        {!isGrounding && <label className="range-control">
           <span>Confidence <strong>{confidence.toFixed(2)}</strong></span>
           <input type="range" min="0.05" max="0.95" step="0.05" value={confidence} onChange={(event) => setConfidence(Number(event.target.value))} />
-        </label>
-        <label className="range-control">
+        </label>}
+        {!isGrounding && <label className="range-control">
           <span>NMS IoU <strong>{iou.toFixed(2)}</strong></span>
           <input type="range" min="0.1" max="0.9" step="0.05" value={iou} onChange={(event) => setIou(Number(event.target.value))} />
-        </label>
+        </label>}
         <button
           className="button primary run-button"
-          disabled={!image || !activeModel || !online || running}
+          disabled={!image || !activeModel || !online || running || (isGrounding && promptRequired && !prompt.trim())}
           onClick={runInference}
           data-testid="run-inference"
         >
@@ -214,7 +309,7 @@ export function InferenceWorkbench({ activeModel, online, onError }: Props) {
       {result && (
         <div className="results-section" data-testid="inference-results">
           <div className="result-summary">
-            <div><Crosshair size={16} /><span>Detections</span><strong>{result.detections.length}</strong></div>
+            <div><Crosshair size={16} /><span>{isGrounding ? 'Regions / points' : 'Detections'}</span><strong>{result.detections.length + result.points.length}</strong></div>
             <div><Sparkles size={16} /><span>Model compute</span><strong>{result.timing.inferenceMs.toFixed(1)} ms</strong></div>
             <div><ScanLine size={16} /><span>HTTP round trip</span><strong>{(result.clientHttpRoundTripMs ?? 0).toFixed(1)} ms</strong></div>
           </div>
@@ -227,12 +322,32 @@ export function InferenceWorkbench({ activeModel, online, onError }: Props) {
                 <div className="result-row" key={`${detection.label}-${detection.trackId ?? index}`}>
                   <span className="class-swatch" style={{ background: boxColors[detection.classId % boxColors.length] }} />
                   <strong>{detection.label}</strong>
-                  <span>class {detection.classId}{detection.trackId !== null ? ` · track ${detection.trackId}` : ''}</span>
-                  <div className="confidence-bar"><i style={{ width: `${detection.confidence * 100}%` }} /></div>
-                  <b>{(detection.confidence * 100).toFixed(1)}%</b>
+                  <span>{isLocateAnything ? 'model-generated box' : `class ${detection.classId}${detection.trackId !== null ? ` · track ${detection.trackId}` : ''}`}</span>
+                  {showsDetectionConfidence && <div className="confidence-bar"><i style={{ width: `${detection.confidence * 100}%` }} /></div>}
+                  <b>{showsDetectionConfidence ? `${(detection.confidence * 100).toFixed(1)}%` : 'BOX'}</b>
                 </div>
               ))}
             </div>
+          )}
+
+          {result.points.length > 0 && (
+            <div className="result-list">
+              {result.points.map((point, index) => (
+                <div className="result-row" key={`${point.label}-${index}`}>
+                  <span className="class-swatch" style={{ background: boxColors[point.classId % boxColors.length] }} />
+                  <strong>{point.label}</strong>
+                  <span>x {point.x.toFixed(0)} · y {point.y.toFixed(0)}</span>
+                  <b>POINT</b>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {isLocateAnything && result.answer && (
+            <details className="grounding-answer">
+              <summary>Raw LocateAnything answer</summary>
+              <code>{result.answer}</code>
+            </details>
           )}
 
           {result.classifications.length > 0 && (

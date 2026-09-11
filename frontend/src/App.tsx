@@ -1,14 +1,13 @@
-import { AlertTriangle, Box, Code2, Cpu, Film, Layers3, Plus, RefreshCw, X } from 'lucide-react'
+import { AlertTriangle, Box, Code2, Cpu, Film, FolderOpen, Layers3, RefreshCw, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api, errorMessage } from './api'
 import { InferenceWorkbench } from './components/InferenceWorkbench'
 import { LiveConveyor } from './components/LiveConveyor'
-import { ModelForm } from './components/ModelForm'
 import { ModelLibrary } from './components/ModelLibrary'
 import { RuntimePanel } from './components/RuntimePanel'
 import { StatusPill } from './components/StatusPill'
 import { VideoDetection } from './components/VideoDetection'
-import type { DirectModelDraft, ModelManifestDraft, RuntimeHealth, StoredModel } from './types'
+import type { RuntimeHealth, StoredModel } from './types'
 
 type AppScreen = 'dashboard' | 'video'
 
@@ -20,8 +19,7 @@ function App() {
   const [health, setHealth] = useState<RuntimeHealth | null>(null)
   const [models, setModels] = useState<StoredModel[]>([])
   const [loading, setLoading] = useState(true)
-  const [formOpen, setFormOpen] = useState(false)
-  const [importing, setImporting] = useState(false)
+  const [scanning, setScanning] = useState(false)
   const [busyModelId, setBusyModelId] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [screen, setScreen] = useState<AppScreen>(screenFromHash)
@@ -53,31 +51,16 @@ function App() {
     return () => window.removeEventListener('hashchange', syncScreen)
   }, [])
 
-  async function addModel(manifest: ModelManifestDraft, param: File, bin: File) {
-    setImporting(true)
+  async function rescanModels() {
+    setScanning(true)
     try {
-      await api.addModel(manifest, param, bin)
-      setFormOpen(false)
-      await refresh(true)
-      setNotice(`${manifest.name} was imported successfully.`)
+      const nextModels = await api.rescanModels()
+      setModels(nextModels)
+      setNotice(`${nextModels.length} model${nextModels.length === 1 ? '' : 's'} detected in models/.`)
     } catch (error) {
       setNotice(errorMessage(error))
     } finally {
-      setImporting(false)
-    }
-  }
-
-  async function addArtifact(draft: DirectModelDraft, model: File) {
-    setImporting(true)
-    try {
-      const imported = await api.addArtifact(draft, model)
-      setFormOpen(false)
-      await refresh(true)
-      setNotice(`${imported.name} was validated and imported successfully.`)
-    } catch (error) {
-      setNotice(errorMessage(error))
-    } finally {
-      setImporting(false)
+      setScanning(false)
     }
   }
 
@@ -90,15 +73,6 @@ function App() {
       setNotice(errorMessage(error))
     } finally {
       setBusyModelId(null)
-    }
-  }
-
-  async function deleteModel(id: string) {
-    try {
-      await api.deleteModel(id)
-      await refresh(true)
-    } catch (error) {
-      setNotice(errorMessage(error))
     }
   }
 
@@ -135,12 +109,17 @@ function App() {
             ) : (
               <>
                 <h1>Video in.<br /><em>Detections out.</em></h1>
-                <p>Run a dedicated object-detection model over a local video with sequential, GPU-backed frame inference and live overlays.</p>
+                <p>Run an object detector, Grounding DINO, or Locate Anything over a local video with sequential, GPU-backed frame inference and live overlays.</p>
               </>
             )}
           </div>
           <div className="hero-actions">
-            {screen === 'dashboard' && <button className="button primary" onClick={() => setFormOpen(true)}><Plus size={17} /> Add model</button>}
+            {screen === 'dashboard' && (
+              <div className="model-source-status">
+                <FolderOpen size={18} />
+                <span><strong>models/</strong>{models.length} automatically detected</span>
+              </div>
+            )}
             <span><span className="live-dot" /> Local execution. Automatic backend selection.</span>
           </div>
         </section>
@@ -155,14 +134,14 @@ function App() {
         {screen === 'dashboard' ? (
           <>
             <div className="dashboard-grid">
-              <ModelLibrary models={models} busyModelId={busyModelId} onActivate={activateModel} onDelete={deleteModel} onAdd={() => setFormOpen(true)} />
+              <ModelLibrary models={models} busyModelId={busyModelId} scanning={scanning} onActivate={activateModel} onRescan={rescanModels} />
               <InferenceWorkbench activeModel={activeModel} online={Boolean(health)} onError={setNotice} />
               <RuntimePanel health={health} activeModel={activeModel} />
               <LiveConveyor online={Boolean(health)} onError={setNotice} />
             </div>
 
             <section className="architecture-strip" aria-label="Application architecture">
-              <div><span>01</span><Box size={18} /><p><strong>React UI</strong>Upload and inspect locally</p></div>
+              <div><span>01</span><Box size={18} /><p><strong>Model discovery</strong>Scan and inspect models/</p></div>
               <i />
               <div><span>02</span><Layers3 size={18} /><p><strong>C++ service</strong>Decode, queue, preprocess</p></div>
               <i />
@@ -178,15 +157,6 @@ function App() {
         <span>Inference Runner Windows 1.0 · built for x86-64</span>
         <a href="https://docs.ultralytics.com/modes/predict/" target="_blank" rel="noreferrer"><Code2 size={14} /> Supported formats</a>
       </footer>
-
-      <ModelForm
-        open={formOpen}
-        submitting={importing}
-        formats={health?.formats ?? []}
-        onClose={() => setFormOpen(false)}
-        onSubmitArtifact={addArtifact}
-        onSubmitNcnn={addModel}
-      />
 
       {notice && (
         <div className="toast" role="alert">

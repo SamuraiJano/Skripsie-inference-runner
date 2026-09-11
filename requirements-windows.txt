@@ -5,3 +5,14 @@ onnx>=1.17,<2
 # ORT 1.27+ PyPI wheels use CUDA 13. This laptop's tested PyTorch runtime is
 # CUDA 12.x, so stay on the CUDA 12 / cuDNN 9 release line.
 onnxruntime-gpu>=1.21,<1.27
+# Grounding DINO Tiny uses the official Transformers implementation. The
+# version is shared with the optional LocateAnything integration.
+transformers==4.57.1
+huggingface-hub>=0.34,<1
+safetensors>=0.4,<1
+timm>=1.0.11,<2
+Pillow>=10,<12
+# Keep the shared scientific/image stack compatible with both Transformers
+# grounding models and LocateAnything's pinned OpenCV runtime.
+numpy>=2,<2.5
+scipy>=1.10,<1.16
