@@ -288,7 +288,8 @@ std::unique_ptr<runner::MultiViewPipeline> simulated_pipeline(
     runner::PipelineConfig config,
     std::vector<double> centers,
     std::function<bool(std::uint64_t)> accept_crop = [](std::uint64_t) { return true; },
-    std::function<runner::SegmentationResult(const runner::SegmentationJobV2&)> segment = {}
+    std::function<runner::SegmentationResult(const runner::SegmentationJobV2&)> segment = {},
+    runner::MultiViewPipeline::SurfaceMapper surface_mapper = {}
 ) {
     auto detector = [centers = std::move(centers)](const runner::LiveFrame& frame) {
         runner::InferenceResult result;
@@ -318,7 +319,8 @@ std::unique_ptr<runner::MultiViewPipeline> simulated_pipeline(
         [accept_crop = std::move(accept_crop)](const runner::LiveFrame& frame, const runner::CropBounds& bounds) {
             if (!accept_crop(frame.frame_id)) return runner::CropImage{};
             return runner::CropImage{{1, 2, 3}, bounds.width, bounds.height, 100.0};
-        }
+        },
+        std::move(surface_mapper)
     );
     pipeline->start();
     return pipeline;
@@ -510,6 +512,55 @@ void test_two_view_timeout_and_insufficient_evidence() {
     one_view->stop();
 }
 
+void test_surface_mapping_disabled_preserves_legacy_api_and_grading() {
+    auto config = pipeline_config();
+    config.surface_mapping_enabled = false;
+    assert(!config.to_json().at("surface_mapping").at("enabled").get<bool>());
+    auto pipeline = simulated_pipeline(config, {120.0, 200.0, 310.0, 375.0, 440.0, 505.0, 570.0, 635.0, 700.0, 840.0});
+    for (std::uint64_t frame = 1; frame <= 10; ++frame) (void)pipeline->process_frame(live_frame(frame));
+    assert(wait_for([&] { return pipeline->track(1) && pipeline->track(1)->state == runner::TrackState::Completed; }));
+    const auto record = pipeline->track(1)->to_json();
+    assert(record.at("finalClass") == "Class 3");
+    assert(record.at("surfaceMapping").is_null());
+    assert(record.contains("grade") && record.contains("incompleteEvidence"));
+    pipeline->stop();
+}
+
+void test_dense_track_views_route_to_background_surface_mapper() {
+    auto config = pipeline_config();
+    config.surface_mapping_enabled = true;
+    config.minimum_capture_frame_gap = 1;
+    config.surface_candidate_frame_stride = 1;
+    config.surface_minimum_mapping_views = 3;
+    config.surface_maximum_mapping_views = 6;
+    config.surface_maximum_candidate_views = 6;
+    std::atomic<int> mapping_calls{0};
+    auto pipeline = simulated_pipeline(
+        config,
+        {120.0, 200.0, 310.0, 375.0, 440.0, 505.0, 570.0, 635.0, 700.0, 840.0},
+        [](std::uint64_t) { return true; },
+        {},
+        [&](const runner::json& request) {
+            ++mapping_calls;
+            assert(request.at("trackId") == 1);
+            assert(request.at("views").size() > 4);  // no fixed four-view completion rule
+            return runner::json{
+                {"status", "complete"}, {"coverage_degrees", 354.0}, {"observed_area_ratio", 0.82},
+                {"accepted_views", request.at("views").size()}, {"incomplete_evidence", false},
+                {"defects", runner::json::object()},
+            };
+        }
+    );
+    // Frame 8 is still above the classification boundary. Reaching the safe
+    // dense-view buffer limit must nevertheless trigger background finalisation.
+    for (std::uint64_t frame = 1; frame <= 8; ++frame) (void)pipeline->process_frame(live_frame(frame));
+    assert(wait_for([&] { return pipeline->track(1) && pipeline->track(1)->state == runner::TrackState::Completed; }));
+    const auto track = pipeline->track(1);
+    assert(track && track->captured_views.size() > 4 && mapping_calls == 1);
+    assert(track->surface_mapping.at("status") == "complete" && !track->incomplete_evidence);
+    pipeline->stop();
+}
+
 void test_stale_track_removal_and_recorded_simulation() {
     auto config = pipeline_config();
     config.stale_track_frames = 1;
@@ -632,6 +683,8 @@ int main() {
     test_routing_four_view_classification_and_no_duplicate();
     test_prediction_only_frames_fill_all_four_capture_targets();
     test_two_view_timeout_and_insufficient_evidence();
+    test_surface_mapping_disabled_preserves_legacy_api_and_grading();
+    test_dense_track_views_route_to_background_surface_mapper();
     test_stale_track_removal_and_recorded_simulation();
     test_tracking_admission_motion_and_identity_scenarios();
     std::cout << "runner tests passed\n";

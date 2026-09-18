@@ -230,6 +230,12 @@ input[type='range']::-webkit-slider-thumb { appearance: none; width: 12px; heigh
 .live-track-card dd { margin: 0; font: 500 8px var(--mono); }
 .evidence-warning { margin: 10px 0 0; display: flex; gap: 5px; align-items: center; color: var(--amber); font-size: 8px; }
 .live-track-card small { display: block; margin-top: 9px; color: var(--danger); font-size: 7px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.surface-result { margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--line); }
+.surface-result-summary { display: flex; flex-wrap: wrap; gap: 4px 9px; align-items: baseline; }
+.surface-result-summary strong { color: var(--accent); font: 600 8px var(--mono); text-transform: uppercase; }
+.surface-result-summary span { color: var(--muted); font: 400 7px var(--mono); }
+.surface-map-images { display: grid; gap: 5px; margin-top: 7px; }
+.surface-map-images img { display: block; width: 100%; min-height: 30px; border: 1px solid var(--line); border-radius: 5px; background: #090d0b; object-fit: contain; }
 .capture-library { padding: 18px; border-top: 1px solid var(--line); }
 .capture-library-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 15px; }
 .capture-library-heading h3 { margin: 5px 0 0; display: flex; align-items: center; gap: 7px; font-size: 14px; }

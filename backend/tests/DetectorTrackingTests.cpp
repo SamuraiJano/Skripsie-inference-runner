@@ -108,7 +108,7 @@ void test_yolo_decoding() {
     assert(std::abs(decoded.front().x - 80.0F) < 0.001F && decoded.front().label == "Naartjie");
 
     value["tensorOrientation"] = "predictions-first";
-    value["outputs"][0]["shape"] = {1, 2, 5};
+    value["outputs"][0]["shape"] = {1, -1, 5};
     manifest = runner::DetectorManifest::from_json(value);
     runner::TensorData predictions_first{"predictions", {1, 2, 5}, {100, 100, 40, 40, 0.9F, 400, 400, 20, 20, 0.09F}};
     decoded = runner::decode_detector_outputs(manifest, {predictions_first}, transform(), 0.10F);
@@ -141,9 +141,9 @@ void test_dfine_decoding() {
     assert(std::abs(decoded[0].x - 240.0F) < 0.001F && std::abs(decoded[0].width - 160.0F) < 0.001F);
 
     value = base_manifest("dfine", "tensorrt");
-    value["outputs"][0]["shape"] = {1, 2};
-    value["outputs"][1]["shape"] = {1, 2, 4};
-    value["outputs"][2]["shape"] = {1, 2};
+    value["outputs"][0]["shape"] = {1, -1};
+    value["outputs"][1]["shape"] = {1, -1, 4};
+    value["outputs"][2]["shape"] = {1, -1};
     const auto fused = runner::DetectorManifest::from_json(value);
     const runner::TensorData labels{"labels", {1, 2}, {0, 0}};
     const runner::TensorData fused_boxes{"boxes", {1, 2, 4}, {10, 20, 50, 70, 12, 22, 48, 68}};
@@ -216,7 +216,9 @@ runner::InferenceResult detector_result(const std::string& id, const std::string
 }
 
 void test_tracking_pipeline() {
-    runner::TrackingPipeline pipeline("session", "model", "yolo", "tflite", {0.25F, 0.0F, 0.5F, 1.0F});
+    runner::ByteTrackConfig tracker_config;
+    tracker_config.tracking_thresh = 0.80F;
+    runner::TrackingPipeline pipeline("session", "model", "yolo", "tflite", {0.25F, 0.0F, 0.5F, 1.0F}, tracker_config);
     assert(pipeline.process(1, 1.0, detector_result("model", "yolo", 5, 10)).tracks.empty());  // outside ROI
     assert(pipeline.process(2, 2.0, detector_result("model", "yolo", 60, 20)).tracks.empty());
     auto result = pipeline.process(3, 3.0, detector_result("model", "yolo", 61, 40));

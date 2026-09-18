@@ -326,7 +326,11 @@ std::vector<unsigned char> decode_mask(const MaskRle& mask) {
     bool foreground = false;
     for (const std::uint32_t run : mask.counts) {
         const std::size_t end = std::min(count, cursor + static_cast<std::size_t>(run));
-        if (foreground) std::fill(pixels.begin() + static_cast<std::ptrdiff_t>(cursor), pixels.begin() + static_cast<std::ptrdiff_t>(end), 255);
+        if (foreground) std::fill(
+            pixels.begin() + static_cast<std::ptrdiff_t>(cursor),
+            pixels.begin() + static_cast<std::ptrdiff_t>(end),
+            static_cast<unsigned char>(255)
+        );
         cursor = end;
         foreground = !foreground;
         if (cursor >= count) break;
@@ -442,6 +446,54 @@ PipelineConfig PipelineConfig::from_json(const json& value) {
         config.windows_cpu_threads = windows.value("cpu_threads", config.windows_cpu_threads);
         config.live_max_fps = windows.value("live_max_fps", config.live_max_fps);
     }
+    if (value.contains("surface_mapping")) {
+        const auto& surface = value.at("surface_mapping");
+        config.surface_mapping_enabled = surface.value("enabled", config.surface_mapping_enabled);
+        config.surface_shape_model = surface.value("shape_model", config.surface_shape_model);
+        config.surface_robust_shape_fit = surface.value("robust_shape_fit", config.surface_robust_shape_fit);
+        config.surface_rotation_primary_axis = surface.value("rotation_primary_axis", config.surface_rotation_primary_axis);
+        const auto direction = surface.value("rotation_direction", json(config.surface_rotation_direction));
+        if (direction.is_string()) {
+            const std::string text = direction.get<std::string>();
+            config.surface_rotation_direction = (text == "negative" || text == "reverse" || text == "clockwise" || text == "-1") ? -1 : 1;
+        } else {
+            config.surface_rotation_direction = direction.get<int>();
+        }
+        config.surface_candidate_frame_stride = surface.value("candidate_frame_stride", config.surface_candidate_frame_stride);
+        config.surface_maximum_candidate_views = surface.value("maximum_candidate_views", config.surface_maximum_candidate_views);
+        config.surface_maximum_mapping_views = surface.value("maximum_mapping_views", config.surface_maximum_mapping_views);
+        config.surface_minimum_mapping_views = surface.value("minimum_mapping_views", config.surface_minimum_mapping_views);
+        config.surface_preferred_step_degrees = surface.value("preferred_step_degrees", config.surface_preferred_step_degrees);
+        config.surface_maximum_step_degrees = surface.value("maximum_step_degrees", config.surface_maximum_step_degrees);
+        config.surface_rotation_search_step_degrees = surface.value("rotation_search_step_degrees", config.surface_rotation_search_step_degrees);
+        config.surface_secondary_axis_limit_degrees = surface.value("secondary_axis_limit_degrees", config.surface_secondary_axis_limit_degrees);
+        config.surface_downsample_factor = surface.value("downsample_factor", config.surface_downsample_factor);
+        config.surface_texture_percentile = surface.value("texture_percentile", config.surface_texture_percentile);
+        config.surface_maximum_texture_points = surface.value("maximum_texture_points", config.surface_maximum_texture_points);
+        config.surface_minimum_texture_points = surface.value("minimum_texture_points", config.surface_minimum_texture_points);
+        config.surface_minimum_valid_point_fraction = surface.value("minimum_valid_point_fraction", config.surface_minimum_valid_point_fraction);
+        config.surface_latitude_limit_degrees = surface.value("latitude_limit_degrees", config.surface_latitude_limit_degrees);
+        config.surface_pre_roll_degrees = surface.value("pre_roll_degrees", config.surface_pre_roll_degrees);
+        config.surface_post_roll_degrees = surface.value("post_roll_degrees", config.surface_post_roll_degrees);
+        config.surface_target_coverage_degrees = surface.value("target_coverage_degrees", config.surface_target_coverage_degrees);
+        config.surface_minimum_confident_coverage = surface.value("minimum_confident_coverage", config.surface_minimum_confident_coverage);
+        config.surface_maximum_map_width = surface.value("maximum_map_width", config.surface_maximum_map_width);
+        config.surface_moment_coordinate_stride = surface.value("moment_coordinate_stride", config.surface_moment_coordinate_stride);
+        config.surface_spherical_tolerance = surface.value("spherical_tolerance", config.surface_spherical_tolerance);
+        config.surface_minimum_detection_confidence = surface.value("minimum_detection_confidence", config.surface_minimum_detection_confidence);
+        config.surface_minimum_focus_score = surface.value("minimum_focus_score", config.surface_minimum_focus_score);
+        config.surface_minimum_mask_area_ratio = surface.value("minimum_mask_area_ratio", config.surface_minimum_mask_area_ratio);
+        config.surface_maximum_mask_area_ratio = surface.value("maximum_mask_area_ratio", config.surface_maximum_mask_area_ratio);
+        config.surface_maximum_secondary_component_ratio = surface.value("maximum_secondary_component_ratio", config.surface_maximum_secondary_component_ratio);
+        config.surface_silhouette_border_pixels = surface.value("silhouette_border_pixels", config.surface_silhouette_border_pixels);
+        config.surface_morphological_closing_pixels = surface.value("morphological_closing_pixels", config.surface_morphological_closing_pixels);
+        config.surface_maximum_center_shift_ratio = surface.value("maximum_center_shift_ratio", config.surface_maximum_center_shift_ratio);
+        config.surface_maximum_scale_change_ratio = surface.value("maximum_scale_change_ratio", config.surface_maximum_scale_change_ratio);
+        config.surface_minimum_observed_area_ratio = surface.value("minimum_observed_area_ratio", config.surface_minimum_observed_area_ratio);
+        config.surface_alignment_confidence_threshold = surface.value("alignment_confidence_threshold", config.surface_alignment_confidence_threshold);
+        config.surface_minimum_reliable_pair_ratio = surface.value("minimum_reliable_pair_ratio", config.surface_minimum_reliable_pair_ratio);
+        config.surface_defect_probability_threshold = surface.value("defect_probability_threshold", config.surface_defect_probability_threshold);
+    }
     config.validate();
     return config;
 }
@@ -498,6 +550,35 @@ json PipelineConfig::to_json() const {
             {"debug_save_images", debug_save_images},
         }},
         {"windows", {{"cpu_threads", windows_cpu_threads}, {"live_max_fps", live_max_fps}}},
+        {"surface_mapping", {
+            {"enabled", surface_mapping_enabled}, {"shape_model", surface_shape_model},
+            {"robust_shape_fit", surface_robust_shape_fit},
+            {"rotation_primary_axis", surface_rotation_primary_axis}, {"rotation_direction", surface_rotation_direction},
+            {"candidate_frame_stride", surface_candidate_frame_stride},
+            {"maximum_candidate_views", surface_maximum_candidate_views}, {"maximum_mapping_views", surface_maximum_mapping_views},
+            {"minimum_mapping_views", surface_minimum_mapping_views}, {"preferred_step_degrees", surface_preferred_step_degrees},
+            {"maximum_step_degrees", surface_maximum_step_degrees},
+            {"rotation_search_step_degrees", surface_rotation_search_step_degrees},
+            {"secondary_axis_limit_degrees", surface_secondary_axis_limit_degrees},
+            {"downsample_factor", surface_downsample_factor}, {"texture_percentile", surface_texture_percentile},
+            {"maximum_texture_points", surface_maximum_texture_points}, {"minimum_texture_points", surface_minimum_texture_points},
+            {"minimum_valid_point_fraction", surface_minimum_valid_point_fraction},
+            {"latitude_limit_degrees", surface_latitude_limit_degrees}, {"pre_roll_degrees", surface_pre_roll_degrees},
+            {"post_roll_degrees", surface_post_roll_degrees}, {"target_coverage_degrees", surface_target_coverage_degrees},
+            {"minimum_confident_coverage", surface_minimum_confident_coverage}, {"maximum_map_width", surface_maximum_map_width},
+            {"moment_coordinate_stride", surface_moment_coordinate_stride}, {"spherical_tolerance", surface_spherical_tolerance},
+            {"minimum_detection_confidence", surface_minimum_detection_confidence}, {"minimum_focus_score", surface_minimum_focus_score},
+            {"minimum_mask_area_ratio", surface_minimum_mask_area_ratio}, {"maximum_mask_area_ratio", surface_maximum_mask_area_ratio},
+            {"maximum_secondary_component_ratio", surface_maximum_secondary_component_ratio},
+            {"silhouette_border_pixels", surface_silhouette_border_pixels},
+            {"morphological_closing_pixels", surface_morphological_closing_pixels},
+            {"maximum_center_shift_ratio", surface_maximum_center_shift_ratio},
+            {"maximum_scale_change_ratio", surface_maximum_scale_change_ratio},
+            {"minimum_observed_area_ratio", surface_minimum_observed_area_ratio},
+            {"alignment_confidence_threshold", surface_alignment_confidence_threshold},
+            {"minimum_reliable_pair_ratio", surface_minimum_reliable_pair_ratio},
+            {"defect_probability_threshold", surface_defect_probability_threshold},
+        }},
     };
 }
 
@@ -511,11 +592,12 @@ void PipelineConfig::validate() const {
         bytetrack_match_iou < 0.0F || bytetrack_match_iou > 1.0F || bytetrack_max_missed < 1) {
         throw std::invalid_argument("ByteTrack thresholds and buffer configuration are invalid");
     }
-    if (target_views < 1 || static_cast<std::size_t>(target_views) != target_capture_percentages.size()) {
+    if (target_views < 1 || (!surface_mapping_enabled && static_cast<std::size_t>(target_views) != target_capture_percentages.size())) {
         throw std::invalid_argument("target_views must match target_capture_percentages");
     }
-    if (minimum_views_for_classification < 1 || minimum_views_for_classification > target_views) {
-        throw std::invalid_argument("minimum classification views must be between 1 and target_views");
+    const int maximum_grade_views = surface_mapping_enabled ? surface_maximum_candidate_views : target_views;
+    if (minimum_views_for_classification < 1 || minimum_views_for_classification > maximum_grade_views) {
+        throw std::invalid_argument("minimum classification views exceed the configured capture buffer");
     }
     if (!std::is_sorted(target_capture_percentages.begin(), target_capture_percentages.end()) ||
         std::any_of(target_capture_percentages.begin(), target_capture_percentages.end(), [](double value) { return value < 0.0 || value > 1.0; })) {
@@ -554,6 +636,32 @@ void PipelineConfig::validate() const {
         maximum_upward_displacement_ratio < 0.0 || stationary_tolerance_ratio < 0.0 ||
         maximum_stationary_frames < minimum_confirmation_hits) {
         throw std::invalid_argument("tracking geometry, confirmation, or motion configuration is invalid");
+    }
+    const auto probability = [](double value) { return std::isfinite(value) && value >= 0.0 && value <= 1.0; };
+    if ((surface_shape_model != "oblate" && surface_shape_model != "sphere") ||
+        (surface_rotation_primary_axis != "x" && surface_rotation_primary_axis != "y") ||
+        (surface_rotation_direction != -1 && surface_rotation_direction != 1) ||
+        surface_candidate_frame_stride < 1 || surface_maximum_candidate_views < 2 ||
+        surface_minimum_mapping_views < 2 || surface_maximum_mapping_views < surface_minimum_mapping_views ||
+        surface_maximum_candidate_views < surface_maximum_mapping_views || surface_preferred_step_degrees <= 0.0 ||
+        surface_maximum_step_degrees < surface_preferred_step_degrees || surface_rotation_search_step_degrees <= 0.0 ||
+        surface_secondary_axis_limit_degrees < 0.0 || surface_downsample_factor < 1 ||
+        surface_texture_percentile <= 0.0 || surface_texture_percentile >= 100.0 ||
+        surface_minimum_texture_points < 4 || surface_maximum_texture_points < surface_minimum_texture_points ||
+        !probability(surface_minimum_valid_point_fraction) || surface_minimum_valid_point_fraction <= 0.0 ||
+        surface_latitude_limit_degrees <= 0.0 || surface_latitude_limit_degrees >= 90.0 ||
+        surface_pre_roll_degrees < 0.0 || surface_post_roll_degrees < 0.0 ||
+        surface_target_coverage_degrees <= 0.0 || surface_target_coverage_degrees > 360.0 ||
+        surface_minimum_confident_coverage <= 0.0 || surface_minimum_confident_coverage > surface_target_coverage_degrees ||
+        surface_maximum_map_width < 64 || surface_moment_coordinate_stride < 1 || !probability(surface_spherical_tolerance) ||
+        !probability(surface_minimum_detection_confidence) || surface_minimum_focus_score < 0.0 ||
+        !probability(surface_minimum_mask_area_ratio) || !probability(surface_maximum_mask_area_ratio) ||
+        surface_maximum_mask_area_ratio <= surface_minimum_mask_area_ratio || !probability(surface_maximum_secondary_component_ratio) ||
+        surface_silhouette_border_pixels < 1 || surface_morphological_closing_pixels < 1 ||
+        !probability(surface_maximum_center_shift_ratio) || !probability(surface_maximum_scale_change_ratio) ||
+        !probability(surface_minimum_observed_area_ratio) || !probability(surface_alignment_confidence_threshold) ||
+        !probability(surface_minimum_reliable_pair_ratio) || !probability(surface_defect_probability_threshold)) {
+        throw std::invalid_argument("surface mapping configuration is invalid");
     }
 }
 
@@ -602,10 +710,22 @@ std::optional<std::size_t> next_capture_target(
 }
 
 json SegmentationResult::to_json() const {
+    json instances = json::array();
+    for (const auto& instance : defect_instances) instances.push_back(instance.to_json());
     return {
         {"generation", generation}, {"trackId", track_id}, {"frameId", frame_id}, {"viewId", view_id},
         {"classProbabilities", class_probabilities}, {"predictedClass", predicted_class}, {"confidence", confidence},
         {"defectArea", defect_area}, {"processingMs", processing_ms}, {"success", success}, {"message", message},
+        {"defectInstances", instances},
+    };
+}
+
+json DefectInstance::to_json() const {
+    return {
+        {"classId", class_id}, {"label", label}, {"confidence", confidence},
+        {"mask", {
+            {"encoding", "rle-row-major"}, {"width", mask.width}, {"height", mask.height}, {"counts", mask.counts},
+        }},
     };
 }
 
@@ -694,11 +814,18 @@ json TrackRecord::to_json(bool include_images) const {
         {"classificationCompleted", classification_completed}, {"counted", counted}, {"exited", exited},
         {"detectionLatencyMs", detection_latency_ms}, {"segmentationLatencyMs", segmentation_latency_ms},
         {"classificationLatencyMs", classification_latency_ms},
+        {"candidateViews", candidate_views}, {"rejectedViews", view_rejections.size()},
+        {"surfaceMapping", surface_mapping},
+        {"defects", surface_mapping.is_object() ? surface_mapping.value("defects", json::object()) : json::object()},
+        {"grade", final_class < 0 ? json(nullptr) : json("Class " + std::to_string(final_class + 1))},
+        {"grade_confidence", final_confidence}, {"incomplete_evidence", incomplete_evidence},
+        {"surface_mapping", surface_mapping},
     };
 }
 
-MultiViewPipeline::MultiViewPipeline(PipelineConfig config, Detector detector, Segmenter segmenter, Cropper cropper)
+MultiViewPipeline::MultiViewPipeline(PipelineConfig config, Detector detector, Segmenter segmenter, Cropper cropper, SurfaceMapper surface_mapper)
     : config_(std::move(config)), detector_(std::move(detector)), segmenter_(std::move(segmenter)), cropper_(std::move(cropper)),
+      surface_mapper_(std::move(surface_mapper)),
       tracker_(std::make_unique<ByteTracker>(config_.bytetrack_high_threshold, config_.bytetrack_low_threshold,
           config_.bytetrack_match_iou, config_.bytetrack_max_missed, config_.bytetrack_new_track_threshold)),
       segmentation_queue_(config_.segmentation_queue_size) {
@@ -712,6 +839,9 @@ void MultiViewPipeline::start() {
     if (running_.exchange(true)) return;
     for (int index = 0; index < config_.segmentation_workers; ++index) {
         segmentation_threads_.emplace_back([this] { segmentation_loop(); });
+    }
+    if (config_.surface_mapping_enabled && surface_mapper_) {
+        surface_mapping_thread_ = std::thread([this] { surface_mapping_loop(); });
     }
 }
 
@@ -916,17 +1046,29 @@ void MultiViewPipeline::update_track(
         }
         if ((operational_state() == TrackState::Confirmed || operational_state() == TrackState::Acquiring) &&
             center_y < classification_line && acquisition_observation) {
-            // Tracker predictions deliberately enter the same scheduler as
-            // detector observations. They can fill a 20/40/60/80 view during a
-            // short dropout, but never add confirmation hits or motion samples.
-            std::vector<bool> captured(config_.target_capture_percentages.size(), false);
-            for (const auto& view : track.captured_views) {
-                if (view.view_id >= 0 && static_cast<std::size_t>(view.view_id) < captured.size()) captured[static_cast<std::size_t>(view.view_id)] = true;
+            // Surface mapping samples a dense bounded sequence.  Route-position
+            // percentages remain only for the explicitly disabled legacy path.
+            std::optional<int> scheduled_view_id;
+            if (config_.surface_mapping_enabled) {
+                const int stride = std::max(config_.minimum_capture_frame_gap, config_.surface_candidate_frame_stride);
+                const bool due = track.candidate_views < config_.surface_maximum_candidate_views &&
+                    (track.last_candidate_frame == 0 || frame.frame_id >= track.last_candidate_frame + static_cast<std::uint64_t>(stride));
+                if (due) scheduled_view_id = track.candidate_views;
+            } else {
+                std::vector<bool> captured(config_.target_capture_percentages.size(), false);
+                for (const auto& view : track.captured_views) {
+                    if (view.view_id >= 0 && static_cast<std::size_t>(view.view_id) < captured.size()) captured[static_cast<std::size_t>(view.view_id)] = true;
+                }
+                const auto target = next_capture_target(track.acquisition_zone_progress, config_.target_capture_percentages, captured);
+                const bool frame_gap_ok = track.captured_views.empty() ||
+                    frame.frame_id >= track.captured_views.back().frame_id + static_cast<std::uint64_t>(config_.minimum_capture_frame_gap);
+                if (target && frame_gap_ok) scheduled_view_id = static_cast<int>(*target);
             }
-            const auto target = next_capture_target(track.acquisition_zone_progress, config_.target_capture_percentages, captured);
-            const bool frame_gap_ok = track.captured_views.empty() ||
-                frame.frame_id >= track.captured_views.back().frame_id + static_cast<std::uint64_t>(config_.minimum_capture_frame_gap);
-            if (target && frame_gap_ok && detection.width >= config_.minimum_crop_width && detection.height >= config_.minimum_crop_height) {
+            if (scheduled_view_id) {
+                track.last_candidate_frame = frame.frame_id;
+                ++track.candidate_views;
+            }
+            if (scheduled_view_id && detection.width >= config_.minimum_crop_width && detection.height >= config_.minimum_crop_height) {
                 bool overlap_ok = true;
                 for (const auto& other : detections) {
                     if (other.track_id != detection.track_id && detection_overlap(detection, other) > config_.maximum_permitted_overlap) {
@@ -942,26 +1084,47 @@ void MultiViewPipeline::update_track(
                         CapturedView view;
                         view.track_id = track.track_id;
                         view.frame_id = frame.frame_id;
-                        view.view_id = static_cast<int>(*target);
+                        view.view_id = *scheduled_view_id;
                         view.timestamp = frame.timestamp;
                         view.zone_progress = track.acquisition_zone_progress;
                         view.original_bounding_box = detection;
                         view.sharpness = crop.sharpness;
                         view.detection_confidence = detection.confidence;
                         view.used_tracking_prediction = !has_observation;
+                        view.crop_bounds = bounds;
                         view.crop = std::move(crop);
                         pending_job = SegmentationJobV2{generation_.load(), track.track_id, frame.frame_id, view.view_id, frame.timestamp, view.crop.encoded};
                         persist_capture_locked(view);
                         track.captured_views.push_back(std::move(view));
                     } else if (crop.sharpness < config_.sharpness_threshold) {
-                        track.messages.push_back("view rejected: sharpness below threshold");
+                        const std::string reason = "sharpness below threshold";
+                        track.messages.push_back("view rejected: " + reason);
+                        track.view_rejections.emplace_back(frame.frame_id, reason);
+                    } else {
+                        const std::string reason = "crop encoding or dimensions invalid";
+                        track.messages.push_back("view rejected: " + reason);
+                        track.view_rejections.emplace_back(frame.frame_id, reason);
                     }
                 } else {
                     track.messages.push_back("view rejected: overlapping fruit");
+                    track.view_rejections.emplace_back(frame.frame_id, "overlapping fruit");
                 }
+            } else if (scheduled_view_id) {
+                track.view_rejections.emplace_back(frame.frame_id, "crop dimensions below threshold");
             }
-            if (track.captured_views.size() >= static_cast<std::size_t>(config_.target_views) && center_y < classification_line) {
-                set_operational_state(TrackState::WaitingForSegmentation);
+            const bool buffer_full = config_.surface_mapping_enabled
+                ? track.candidate_views >= config_.surface_maximum_candidate_views
+                : track.captured_views.size() >= static_cast<std::size_t>(config_.target_views);
+            if (buffer_full && center_y < classification_line) {
+                if (config_.surface_mapping_enabled) {
+                    set_operational_state(TrackState::WaitingForClassification);
+                    if (track.line_reached_at.time_since_epoch().count() == 0) {
+                        track.line_reached_at = std::chrono::steady_clock::now();
+                        track.messages.push_back("view buffer limit reached; finalising bounded capture sequence");
+                    }
+                } else {
+                    set_operational_state(TrackState::WaitingForSegmentation);
+                }
             }
         }
         if (reached_line && track.state != TrackState::Completed && track.state != TrackState::Rejected) {
@@ -1045,27 +1208,151 @@ void MultiViewPipeline::maybe_classify_locked(TrackRecord& track, std::chrono::s
     const double elapsed = seconds_between(track.line_reached_at, now);
     if (elapsed < config_.classification_delay_seconds) return;
     const bool timed_out = elapsed >= config_.classification_timeout_seconds;
-    const bool all_target_results = track.captured_views.size() >= static_cast<std::size_t>(config_.target_views) &&
-        track.segmentation_results.size() >= track.captured_views.size();
-    if (!timed_out && !all_target_results) return;
+    const bool all_results_settled = std::all_of(track.captured_views.begin(), track.captured_views.end(), [](const CapturedView& view) {
+        return view.segmentation_status == "completed" || view.segmentation_status == "failed" || view.segmentation_status == "dropped";
+    });
+    const bool all_target_results = track.captured_views.size() >= static_cast<std::size_t>(config_.target_views) && all_results_settled;
+    if (!timed_out && !(config_.surface_mapping_enabled ? all_results_settled : all_target_results)) return;
+    if (track.surface_mapping_queued) return;
     FinalClassification final = aggregate_track_results(
         track.segmentation_results,
         config_.class_confidence_threshold,
         static_cast<int>(track.captured_views.size()),
-        timed_out && track.captured_views.size() < static_cast<std::size_t>(config_.target_views)
+        !config_.surface_mapping_enabled && timed_out && track.captured_views.size() < static_cast<std::size_t>(config_.target_views)
     );
     if (final.successful_results < config_.minimum_views_for_classification) {
         if (!timed_out) return;
         track.incomplete_evidence = true;
+        if (config_.surface_mapping_enabled) {
+            track.surface_mapping = {
+                {"status", "failed"}, {"incomplete_evidence", true},
+                {"failure_reasons", {"insufficient confident segmented views for grading or mapping"}},
+            };
+        }
         mark_rejected_locked(track, "insufficient evidence: " + std::to_string(final.successful_results) +
             " confident view(s), " + std::to_string(config_.minimum_views_for_classification) + " required", now, true);
         return;
     }
+    if (config_.surface_mapping_enabled) {
+        if (surface_mapper_) {
+            SurfaceMappingJob job;
+            job.generation = generation_.load();
+            job.track_id = track.track_id;
+            job.request = surface_mapping_request_locked(track, final);
+            job.fallback = final;
+            if (surface_mapping_queue_.try_push(std::move(job))) {
+                track.surface_mapping_queued = true;
+                track.messages.push_back("surface mapping queued after track finalisation");
+                return;
+            }
+            track.surface_mapping = {
+                {"status", "fallback"}, {"incomplete_evidence", true},
+                {"failure_reasons", {"surface mapping queue is full"}},
+            };
+            final.incomplete_evidence = true;
+        } else {
+            track.surface_mapping = {
+                {"status", "fallback"}, {"incomplete_evidence", true},
+                {"failure_reasons", {"surface mapping worker is unavailable"}},
+            };
+            final.incomplete_evidence = true;
+        }
+    }
+    complete_track_locked(track, final, now);
+}
+
+json MultiViewPipeline::surface_mapping_request_locked(const TrackRecord& track, const FinalClassification& fallback) const {
+    json views = json::array();
+    for (const auto& view : track.captured_views) {
+        if (view.capture_id.empty()) continue;
+        json instances = json::array();
+        const auto result = std::find_if(track.segmentation_results.begin(), track.segmentation_results.end(), [&](const SegmentationResult& candidate) {
+            return candidate.view_id == view.view_id && candidate.frame_id == view.frame_id;
+        });
+        if (result != track.segmentation_results.end()) {
+            for (const auto& instance : result->defect_instances) instances.push_back(instance.to_json());
+            if (instances.empty() && !result->defect_mask.counts.empty()) {
+                DefectInstance selected;
+                selected.class_id = result->predicted_class;
+                selected.label = "class_" + std::to_string(result->predicted_class);
+                selected.confidence = result->confidence;
+                selected.mask = result->defect_mask;
+                instances.push_back(selected.to_json());
+            }
+        }
+        views.push_back({
+            {"trackId", track.track_id}, {"frameId", view.frame_id}, {"viewId", view.view_id},
+            {"timestamp", view.timestamp},
+            {"cropPath", std::filesystem::absolute(config_.output_directory / "captures" / (view.capture_id + ".jpg")).string()},
+            {"originalBoundingBox", detection_json(view.original_bounding_box)},
+            {"cropTransform", {
+                {"offsetX", view.crop_bounds.x}, {"offsetY", view.crop_bounds.y},
+                {"scaleX", 1.0}, {"scaleY", 1.0},
+            }},
+            {"detectionConfidence", view.detection_confidence}, {"focusScore", view.sharpness},
+            {"usedTrackingPrediction", view.used_tracking_prediction}, {"defectInstances", instances},
+        });
+    }
+    json capture_rejections = json::array();
+    for (const auto& [frame, reason] : track.view_rejections) capture_rejections.push_back({{"frame", frame}, {"reason", reason}});
+    return {
+        {"trackId", track.track_id}, {"sessionId", capture_run_id_},
+        {"outputDirectory", std::filesystem::absolute(config_.output_directory / ("track_" + std::to_string(track.track_id))).string()},
+        {"fallbackGrade", "Class " + std::to_string(fallback.final_class + 1)},
+        {"fallbackGradeConfidence", fallback.confidence}, {"config", config_.to_json().at("surface_mapping")},
+        {"captureRejections", capture_rejections}, {"views", views},
+    };
+}
+
+void MultiViewPipeline::surface_mapping_loop() {
+    SurfaceMappingJob job;
+    while (surface_mapping_queue_.pop(job)) {
+        if (!running_) break;
+        json mapping;
+        try {
+            mapping = surface_mapper_(job.request);
+            if (!mapping.is_object() || !mapping.contains("status")) throw std::runtime_error("surface mapper returned an invalid result");
+        } catch (const std::exception& error) {
+            mapping = {
+                {"status", "fallback"}, {"incomplete_evidence", true},
+                {"failure_reasons", {std::string("surface mapping failed: ") + error.what()}},
+                {"coverage_degrees", 0.0}, {"observed_area_ratio", 0.0},
+                {"accepted_views", 0}, {"rejected_views", job.request.value("views", json::array()).size()},
+            };
+        }
+        std::scoped_lock lock(tracks_mutex_);
+        if (job.generation != generation_.load()) continue;
+        const auto found = tracks_.find(job.track_id);
+        if (found == tracks_.end()) continue;
+        TrackRecord& track = found->second;
+        if (track.state == TrackState::Completed || track.state == TrackState::Rejected) continue;
+        track.surface_mapping = std::move(mapping);
+        FinalClassification final = job.fallback;
+        if (track.surface_mapping.value("status", "fallback") == "complete" &&
+            track.surface_mapping.contains("grade_class_id") && track.surface_mapping.at("grade_class_id").is_number_integer()) {
+            const int fused_class = track.surface_mapping.at("grade_class_id").get<int>();
+            if (fused_class >= 0 && fused_class <= 2) {
+                final.final_class = fused_class;
+                final.confidence = track.surface_mapping.value("grade_confidence", final.confidence);
+            }
+        }
+        final.incomplete_evidence = final.incomplete_evidence || track.surface_mapping.value("incomplete_evidence", true) ||
+            track.surface_mapping.value("status", "fallback") != "complete";
+        complete_track_locked(track, final, std::chrono::steady_clock::now());
+    }
+}
+
+void MultiViewPipeline::complete_track_locked(
+    TrackRecord& track,
+    const FinalClassification& final,
+    std::chrono::steady_clock::time_point now
+) {
     track.final_class = final.final_class;
     track.final_confidence = final.confidence;
     track.views_used = final.successful_results;
     track.total_visible_defect_area = final.total_visible_defect_area;
-    track.incomplete_evidence = final.incomplete_evidence || final.successful_results < config_.target_views;
+    track.incomplete_evidence = final.incomplete_evidence ||
+        (!config_.surface_mapping_enabled && final.successful_results < config_.target_views);
     track.classification_timestamp = utc_now_iso8601();
     track.classification_latency_ms = seconds_between(track.first_seen_at, now) * 1000.0;
     last_classification_latency_ms_ = track.classification_latency_ms;
@@ -1130,6 +1417,12 @@ void MultiViewPipeline::release_track_payload_locked(TrackRecord& track) {
         result.class_probabilities.shrink_to_fit();
         result.defect_mask.counts.clear();
         result.defect_mask.counts.shrink_to_fit();
+        for (auto& instance : result.defect_instances) {
+            instance.mask.counts.clear();
+            instance.mask.counts.shrink_to_fit();
+        }
+        result.defect_instances.clear();
+        result.defect_instances.shrink_to_fit();
     }
     track.centroid_y_history.clear();
 }
@@ -1215,6 +1508,35 @@ std::optional<std::vector<unsigned char>> MultiViewPipeline::capture_image(const
     return bytes;
 }
 
+std::optional<std::vector<unsigned char>> MultiViewPipeline::result_asset(int track_id, const std::string& filename) const {
+    static const std::unordered_set<std::string> allowed{
+        "surface_rgb.png", "surface_defect_overlay.png", "surface_observed_mask.png",
+        "surface_alignment_confidence.png", "surface_metadata.json",
+    };
+    static const std::string probability_prefix = "surface_defect_";
+    static const std::string numpy_suffix = ".npy";
+    const bool probability_map = filename.size() > probability_prefix.size() + numpy_suffix.size() &&
+        filename.compare(0, probability_prefix.size(), probability_prefix) == 0 &&
+        filename.compare(filename.size() - numpy_suffix.size(), numpy_suffix.size(), numpy_suffix) == 0 &&
+        std::all_of(filename.begin() + static_cast<std::ptrdiff_t>(probability_prefix.size()), filename.end() - static_cast<std::ptrdiff_t>(numpy_suffix.size()), [](unsigned char value) {
+            return std::isalnum(value) || value == '_' || value == '-';
+        });
+    const bool confidence_data = filename == "surface_alignment_confidence.npy";
+    if (track_id < 0 || (allowed.find(filename) == allowed.end() && !probability_map && !confidence_data)) {
+        throw std::invalid_argument("invalid surface result asset");
+    }
+    const auto path = config_.output_directory / ("track_" + std::to_string(track_id)) / filename;
+    if (!std::filesystem::is_regular_file(path)) return std::nullopt;
+    const auto size = std::filesystem::file_size(path);
+    if (size == 0 || size > 100 * 1024 * 1024) throw std::runtime_error("surface result asset has an invalid size");
+    std::ifstream input(path, std::ios::binary);
+    if (!input) throw std::runtime_error("could not open surface result asset");
+    std::vector<unsigned char> bytes(static_cast<std::size_t>(size));
+    input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    if (!input) throw std::runtime_error("could not read surface result asset");
+    return bytes;
+}
+
 void MultiViewPipeline::save_result_locked(TrackRecord& track) {
     if (track.result_saved) return;
     try {
@@ -1226,6 +1548,18 @@ void MultiViewPipeline::save_result_locked(TrackRecord& track) {
         result_output << std::setw(2) << record << '\n';
         std::ofstream log_output(config_.logging_directory / "tracks.jsonl", std::ios::app);
         log_output << record.dump() << '\n';
+        if (track.surface_mapping.is_object() && !track.surface_mapping.contains("track_id")) {
+            const auto surface_directory = config_.output_directory / ("track_" + std::to_string(track.track_id));
+            std::filesystem::create_directories(surface_directory);
+            json surface_metadata = track.surface_mapping;
+            surface_metadata["track_id"] = track.track_id;
+            surface_metadata["session_id"] = capture_run_id_;
+            surface_metadata["grade"] = track.final_class < 0 ? json(nullptr) : json("Class " + std::to_string(track.final_class + 1));
+            surface_metadata["grade_confidence"] = track.final_confidence;
+            surface_metadata["incomplete_evidence"] = track.incomplete_evidence;
+            std::ofstream surface_output(surface_directory / "surface_metadata.json");
+            surface_output << std::setw(2) << surface_metadata << '\n';
+        }
         if (config_.debug_save_images) {
             const auto debug_directory = config_.output_directory / ("track_" + std::to_string(track.track_id));
             std::filesystem::create_directories(debug_directory);
@@ -1260,8 +1594,17 @@ std::size_t MultiViewPipeline::remove_stale_tracks(std::uint64_t current_frame, 
         const bool stale = current_frame > track.last_seen_frame &&
             current_frame - track.last_seen_frame > static_cast<std::uint64_t>(lost_buffer);
         if (stale && track.state != TrackState::Completed && track.state != TrackState::Rejected) {
-            mark_rejected_locked(track, "track lost before classification completed", now,
-                track.confirmed || !track.captured_views.empty());
+            if (config_.surface_mapping_enabled && track.confirmed &&
+                track.captured_views.size() >= static_cast<std::size_t>(config_.minimum_views_for_classification)) {
+                track.state = TrackState::WaitingForClassification;
+                track.line_reached_at = now - std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                    std::chrono::duration<double>(config_.classification_timeout_seconds));
+                maybe_classify_locked(track, now);
+            }
+            if (!track.surface_mapping_queued && track.state != TrackState::Completed && track.state != TrackState::Rejected) {
+                mark_rejected_locked(track, "track lost before classification completed", now,
+                    track.confirmed || !track.captured_views.empty());
+            }
         }
         const bool terminal = track.state == TrackState::Completed || track.state == TrackState::Rejected;
         if (terminal && seconds_between(track.terminal_at, now) >= config_.track_retention_seconds) {
@@ -1329,9 +1672,11 @@ void MultiViewPipeline::reset() {
 void MultiViewPipeline::stop() {
     if (!running_.exchange(false)) return;
     segmentation_queue_.stop();
+    surface_mapping_queue_.stop();
     model_condition_.notify_all();
     for (auto& worker : segmentation_threads_) if (worker.joinable()) worker.join();
     segmentation_threads_.clear();
+    if (surface_mapping_thread_.joinable()) surface_mapping_thread_.join();
 }
 
 }  // namespace runner

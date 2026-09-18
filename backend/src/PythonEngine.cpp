@@ -164,6 +164,14 @@ json python_backend_health() {
     }
 }
 
+json python_surface_mapping(const json& request) {
+    auto client = client_for_backend(600);
+    return parse_response(
+        client->Post("/surface-map", request.dump(), "application/json"),
+        "surface mapping"
+    );
+}
+
 json discover_models() {
     auto client = client_for_backend(120);
     const json result = parse_response(client->Get("/models/discover"), "model discovery");

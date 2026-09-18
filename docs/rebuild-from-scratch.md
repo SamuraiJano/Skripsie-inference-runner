@@ -57,10 +57,11 @@ Implement the system in these stages:
 4. Add model discovery and activation only after inference works.
 5. Add video sampling with one request in flight.
 6. Add a stateful tracker using synthetic detection sequences.
-7. Add route progress and the four-view scheduler.
+7. Add route progress and bounded dense per-track capture.
 8. Add crop quality gates and the bounded segmentation queue.
-9. Add grading, persistence and timeout behavior.
-10. Optimize or add more runtime formats last.
+9. Add background spheroid fitting, texture alignment and surface fusion.
+10. Add grading, persistence and timeout behavior.
+11. Optimize or add more runtime formats last.
 
 This order keeps model/runtime problems separate from tracker/state-machine problems.
 
@@ -294,7 +295,7 @@ Python's standard `http.server` is suitable here only because the service is pri
 
 ## 5. Conveyor algorithms: these are C++, not Python
 
-The four images at 20%, 40%, 60% and 80%, dropout prediction, tracking, crop quality gates, segmentation queue and final naartjie grade are implemented in [`backend/src/Pipeline.cpp`](../backend/src/Pipeline.cpp), with configuration in [`config/pipeline.example.json`](../config/pipeline.example.json).
+ByteTrack identity, dense view collection, dropout prediction, crop quality gates, segmentation queues and final naartjie grade are implemented in [`backend/src/Pipeline.cpp`](../backend/src/Pipeline.cpp), with configuration in [`config/pipeline.example.json`](../config/pipeline.example.json). Numerical surface reconstruction is kept in one module, [`backend/python/surface_mapping.py`](../backend/python/surface_mapping.py), and runs through the existing private Python worker.
 
 ### 5.1 Detection filtering and new-track gate
 
@@ -335,7 +336,7 @@ cost = iou_weight * (1 - IoU(predicted_box, detection_box))
      + (1 - iou_weight) * normalized_centroid_distance
 ```
 
-plus class-awareness, direction gates, confidence stages, velocity drag and track age/buffer limits. Do not accidentally assume this second implementation is the one instantiated by `MultiViewPipeline`; the live four-capture flow uses the smaller `ByteTracker` described above.
+plus class-awareness, direction gates, confidence stages, velocity drag and track age/buffer limits. Do not accidentally assume this second implementation is the one instantiated by `MultiViewPipeline`; the live surface-mapping flow uses the smaller `ByteTracker` described above.
 
 ### 5.3 Track confirmation and false-positive rejection
 
@@ -358,7 +359,11 @@ progress = clamp((cy - start) / (end - start), 0, 1)
 
 The variable names in the helper use `x`, but the live conveyor passes vertical `center_y` values. Route direction is top to bottom.
 
-### 5.5 The 20/40/60/80 capture scheduler
+### 5.5 Dense bounded view collection
+
+When `surface_mapping.enabled` is true, a confirmed fruit is sampled every `candidate_frame_stride` eligible frames while it is inside the acquisition ROI. `maximum_candidate_views` is a hard memory limit, and `maximum_mapping_views` limits the views entering the numerical search. Completion never depends on reaching a configured view count; it depends on estimated angular coverage, gap size, observed area and alignment confidence.
+
+The former route-percentage scheduler remains only as a compatibility path when surface mapping is disabled.
 
 Configuration:
 
@@ -369,7 +374,7 @@ Configuration:
 }
 ```
 
-For each confirmed track, `next_capture_target()` scans targets in order and returns the first uncaptured target for which `progress >= target`. Each target index becomes the stable `viewId`, so a target cannot be captured twice.
+In that disabled path, `next_capture_target()` scans targets in order and returns the first uncaptured target for which `progress >= target`.
 
 A capture is accepted only if:
 
@@ -380,9 +385,11 @@ A capture is accepted only if:
 - the crop dimensions remain large enough; and
 - Laplacian variance is above the sharpness threshold.
 
-If the detector is temporarily lost, the tracker-predicted box follows the exact same scheduler. The saved view is marked `usedTrackingPrediction: true`. When detection resumes, association restores the observation to the same track instead of starting the four-view sequence again.
+If the detector is temporarily lost, the tracker-predicted box follows the same bounded collector. The saved view is marked `usedTrackingPrediction: true`. When detection resumes, association restores the observation to the same track instead of starting a new sequence.
 
 The guarantee is therefore “at most one image per configured target and continued opportunities during a bounded tracking loss,” not “always exactly four images under every physical condition.” A track can still have fewer than four if it is never confirmed, expires longer than the miss buffer, moves too far between submitted frames, or every eligible crop fails overlap/sharpness/size/queue constraints.
+
+For enabled mapping, each accepted record instead retains frame/time, the original box, crop-to-frame translation, native-aspect-ratio JPEG, confidence, focus score, segmentation instances and whether it used a tracker prediction. Rejected candidate reasons are retained in result metadata.
 
 ### 5.6 Cropping and sharpness
 
@@ -408,7 +415,24 @@ Detection/tracking remains on the frame path. Accepted crops become jobs contain
 - Duplicate/stale results are ignored.
 - Queue overflow marks that view as dropped instead of blocking the detector forever.
 
-### 5.8 Final grading
+### 5.8 Surface fitting, alignment and fusion
+
+After a track reaches the classification boundary (or a confirmed track times out), a dedicated surface worker sends paths and segmentation RLEs to the private Python `/surface-map` endpoint. This is separate from both the detector loop and segmentation workers.
+
+The mapper performs these stages:
+
+1. Run GrabCut on every native-resolution crop; retain the largest component, fill holes and close small breaks.
+2. Reject boundary-touching, implausible, disconnected, blurred, low-confidence or geometrically discontinuous views.
+3. Fit covariance ellipses. Use `A = mean(2 sqrt(lambda_max))` and `B = min(2 sqrt(lambda_min))`; switch to a sphere when `(A-B)/A` is small.
+4. Downsample the green channel, subtract a Gaussian blur (`sigma=1.25`), select strong safe-interior texture points, and search constrained Rodrigues vectors `(rx, ry, 0)`.
+5. Refine the discrete minimum with a local quadratic only when its Hessian is positive definite and well conditioned. Textureless or weak pairs remain unreliable. One bad intermediate view may be bypassed only inside the maximum angular gap.
+6. Accumulate `G[i+1] = R[i->i+1] @ G[i]`, normalize drift with SVD, propagate the reference fruit basis, and calculate unwrapped centre longitudes.
+7. Use vectorized NumPy and `cv2.remap()` to project RGB, per-class probability, confidence and observed masks to a latitude-limited longitude map. At most the two bracketing views contribute to a map point.
+8. Weight defect areas by the spheroid surface Jacobian. A three-width connected-component tile joins regions across the longitude seam without counting duplicated pixels.
+
+The geometry follows [Albiol et al. 2021](https://doi.org/10.3390/s21062232) and the fusion follows [Albiol et al. 2022](https://doi.org/10.3390/s22145452). A black RGB pixel is not automatically unknown; the authoritative indicator is `surface_observed_mask.png`. Unknown map locations are never mirrored or inpainted.
+
+### 5.9 Final grading
 
 Each successful view produces a class and confidence. The aggregator:
 
@@ -420,7 +444,7 @@ Each successful view produces a class and confidence. The aggregator:
 
 The mapping “higher class index means worse fruit” is a domain invariant. Change the aggregation rule if your class order is different.
 
-### 5.9 Track state machine
+### 5.10 Track state machine
 
 ```text
 TENTATIVE
@@ -540,6 +564,7 @@ Production:
 | POST | `/api/pipeline/reset` | new tracking generation |
 | GET | `/api/pipeline/captures` | persisted crop metadata |
 | GET | `/api/pipeline/captures/{id}.jpg` | exact saved crop |
+| GET | `/api/pipeline/results/{trackId}/{asset}` | saved surface map, mask, overlay, confidence or metadata |
 
 Inspect the actual multipart validation and route handlers in [`backend/src/main.cpp`](../backend/src/main.cpp).
 
@@ -576,17 +601,18 @@ For a close reproduction, retain the repository's `frontend/`, `backend/src/`, `
 - RLE round-trip including first-pixel foreground and all-zero/all-one masks.
 - IoU association with high-score and low-score recovery.
 - Two nearby fruit crossing without ID reuse.
-- Detector missing frames around each 20/40/60/80 target.
+- Detector missing frames during dense route sampling and across the legacy 20/40/60/80 targets.
 - Reacquisition after a predicted interval retains the original track ID.
-- A target cannot be captured twice.
-- A fast jump crossing multiple targets captures them in order on later frames, subject to the frame gap.
+- Candidate sampling obeys the stride and bounded-memory limits without duplicate frames.
+- A fast jump crossing multiple legacy targets captures them in order when surface mapping is disabled.
 - Blur, too-small crop and overlapping-fruit rejection.
 - Queue overflow and reset-generation stale results.
-- Timeout with fewer than four views.
-- Conservative grade when different views return different classes.
+- Timeout or route exit with too little reliable surface evidence falls back explicitly.
+- Synthetic sphere and oblate-spheroid projection, rotation recovery and seam-connected defects.
+- Complete fused evidence uses the existing conservative grade rule; incomplete evidence cannot silently claim a fused grade.
 - Stop/restart video while an HTTP request is still in flight.
 
-The existing C++ regression cases are in [`backend/tests/RunnerTests.cpp`](../backend/tests/RunnerTests.cpp), and Python discovery/RLE tests are in [`backend/python/test_model_service.py`](../backend/python/test_model_service.py).
+The existing C++ regression cases are in [`backend/tests/RunnerTests.cpp`](../backend/tests/RunnerTests.cpp). Python discovery/RLE tests are in [`backend/python/test_model_service.py`](../backend/python/test_model_service.py), and mapping geometry/fusion tests are in [`backend/python/test_surface_mapping.py`](../backend/python/test_surface_mapping.py).
 
 ## 10. Common reconstruction mistakes
 

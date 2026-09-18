@@ -32,6 +32,7 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 MAX_IMAGE_BYTES = 25 * 1024 * 1024
+MAX_SURFACE_REQUEST_BYTES = 100 * 1024 * 1024
 MAX_ARCHIVE_FILES = 4096
 MAX_ARCHIVE_BYTES = 4 * 1024 * 1024 * 1024
 _FORMAT_CAPABILITIES: list[dict[str, Any]] | None = None
@@ -1793,6 +1794,16 @@ class ServiceHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         try:
             parsed = urlparse(self.path)
+            if parsed.path == "/surface-map":
+                # Imported lazily so model discovery and ordinary inference do
+                # not pay the OpenCV surface-mapping initialization cost.
+                from surface_mapping import map_surface_request
+
+                request = json.loads(self.read_body(MAX_SURFACE_REQUEST_BYTES))
+                if not isinstance(request, dict):
+                    raise ValueError("surface-map request must be a JSON object")
+                self.send_json(HTTPStatus.OK, map_surface_request(request))
+                return
             if parsed.path == "/models/load":
                 request = json.loads(self.read_body(1024 * 1024))
                 self.send_json(HTTPStatus.OK, self.registry.load(request))

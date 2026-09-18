@@ -293,6 +293,49 @@ struct PipelineConfig {
     int windows_cpu_threads = 8;
     int live_max_fps = 30;
 
+    // Dense, bounded candidate collection replaces the legacy assumption that
+    // four route percentages constitute a complete inspection.  The legacy
+    // capture settings remain available only when surface mapping is disabled.
+    bool surface_mapping_enabled = false;
+    std::string surface_shape_model = "oblate";
+    bool surface_robust_shape_fit = false;
+    std::string surface_rotation_primary_axis = "y";
+    int surface_rotation_direction = 1;
+    int surface_candidate_frame_stride = 2;
+    int surface_maximum_candidate_views = 30;
+    int surface_maximum_mapping_views = 20;
+    int surface_minimum_mapping_views = 8;
+    double surface_preferred_step_degrees = 24.0;
+    double surface_maximum_step_degrees = 40.0;
+    double surface_rotation_search_step_degrees = 1.0;
+    double surface_secondary_axis_limit_degrees = 10.0;
+    int surface_downsample_factor = 4;
+    double surface_texture_percentile = 97.0;
+    int surface_maximum_texture_points = 80;
+    int surface_minimum_texture_points = 20;
+    double surface_minimum_valid_point_fraction = 0.45;
+    double surface_latitude_limit_degrees = 60.0;
+    double surface_pre_roll_degrees = 45.0;
+    double surface_post_roll_degrees = 45.0;
+    double surface_target_coverage_degrees = 350.0;
+    double surface_minimum_confident_coverage = 300.0;
+    int surface_maximum_map_width = 1600;
+    int surface_moment_coordinate_stride = 4;
+    double surface_spherical_tolerance = 0.06;
+    double surface_minimum_detection_confidence = 0.25;
+    double surface_minimum_focus_score = 35.0;
+    double surface_minimum_mask_area_ratio = 0.35;
+    double surface_maximum_mask_area_ratio = 0.92;
+    double surface_maximum_secondary_component_ratio = 0.12;
+    int surface_silhouette_border_pixels = 3;
+    int surface_morphological_closing_pixels = 5;
+    double surface_maximum_center_shift_ratio = 0.22;
+    double surface_maximum_scale_change_ratio = 0.30;
+    double surface_minimum_observed_area_ratio = 0.55;
+    double surface_alignment_confidence_threshold = 0.18;
+    double surface_minimum_reliable_pair_ratio = 0.65;
+    double surface_defect_probability_threshold = 0.50;
+
     static PipelineConfig from_json(const json& value);
     json to_json() const;
     void validate() const;
@@ -322,6 +365,15 @@ struct CropImage {
     double sharpness = 0.0;
 };
 
+struct DefectInstance {
+    int class_id = -1;
+    std::string label;
+    float confidence = 0.0F;
+    MaskRle mask;
+
+    json to_json() const;
+};
+
 struct SegmentationResult {
     std::uint64_t generation = 0;
     int track_id = -1;
@@ -335,6 +387,7 @@ struct SegmentationResult {
     double processing_ms = 0.0;
     bool success = false;
     std::string message;
+    std::vector<DefectInstance> defect_instances;
 
     json to_json() const;
 };
@@ -352,6 +405,7 @@ struct CapturedView {
     float detection_confidence = 0.0F;
     bool used_tracking_prediction = false;
     std::string segmentation_status = "queued";
+    CropBounds crop_bounds;
 };
 
 struct FinalClassification {
@@ -415,6 +469,11 @@ struct TrackRecord {
     std::chrono::steady_clock::time_point line_reached_at;
     std::chrono::steady_clock::time_point terminal_at;
     bool result_saved = false;
+    int candidate_views = 0;
+    std::uint64_t last_candidate_frame = 0;
+    std::vector<std::pair<std::uint64_t, std::string>> view_rejections;
+    json surface_mapping = nullptr;
+    bool surface_mapping_queued = false;
 
     json to_json(bool include_images = false) const;
 };
@@ -436,6 +495,13 @@ struct SegmentationJobV2 {
     int view_id = -1;
     std::string timestamp;
     std::vector<unsigned char> crop_image;
+};
+
+struct SurfaceMappingJob {
+    std::uint64_t generation = 0;
+    int track_id = -1;
+    json request;
+    FinalClassification fallback;
 };
 
 template <typename T>
@@ -495,14 +561,16 @@ public:
     using Detector = std::function<InferenceResult(const LiveFrame&)>;
     using Segmenter = std::function<SegmentationResult(const SegmentationJobV2&)>;
     using Cropper = std::function<CropImage(const LiveFrame&, const CropBounds&)>;
+    using SurfaceMapper = std::function<json(const json&)>;
 
-    MultiViewPipeline(PipelineConfig config, Detector detector, Segmenter segmenter, Cropper cropper);
+    MultiViewPipeline(PipelineConfig config, Detector detector, Segmenter segmenter, Cropper cropper, SurfaceMapper surface_mapper = {});
     ~MultiViewPipeline();
     void start();
     json process_frame(const LiveFrame& frame);
     json snapshot() const;
     json capture_library(std::size_t limit = 500) const;
     std::optional<std::vector<unsigned char>> capture_image(const std::string& capture_id) const;
+    std::optional<std::vector<unsigned char>> result_asset(int track_id, const std::string& filename) const;
     void reset();
     void stop();
 
@@ -514,6 +582,7 @@ public:
 
 private:
     void segmentation_loop();
+    void surface_mapping_loop();
     void update_track(
         const LiveFrame& frame,
         const Detection& detection,
@@ -522,6 +591,8 @@ private:
         bool has_observation
     );
     void maybe_classify_locked(TrackRecord& track, std::chrono::steady_clock::time_point now);
+    void complete_track_locked(TrackRecord& track, const FinalClassification& final, std::chrono::steady_clock::time_point now);
+    json surface_mapping_request_locked(const TrackRecord& track, const FinalClassification& fallback) const;
     void mark_rejected_locked(TrackRecord& track, const std::string& reason, std::chrono::steady_clock::time_point now, bool save_result);
     void mark_missing_tracks_locked(std::uint64_t current_frame);
     void add_diagnostic_locked(std::string message);
@@ -534,13 +605,16 @@ private:
     Detector detector_;
     Segmenter segmenter_;
     Cropper cropper_;
+    SurfaceMapper surface_mapper_;
     mutable std::mutex tracks_mutex_;
     std::unordered_map<int, TrackRecord> tracks_;
     std::unordered_set<int> terminal_track_ids_;
     std::deque<std::string> recent_tracking_diagnostics_;
     std::unique_ptr<ByteTracker> tracker_;
     BoundedFifoQueue<SegmentationJobV2> segmentation_queue_;
+    BoundedFifoQueue<SurfaceMappingJob> surface_mapping_queue_{4};
     std::vector<std::thread> segmentation_threads_;
+    std::thread surface_mapping_thread_;
     std::atomic<bool> running_{false};
     std::atomic<int> detector_waiting_{0};
     std::atomic<std::uint64_t> generation_{1};

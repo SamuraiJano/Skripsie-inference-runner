@@ -43,6 +43,9 @@ function PipelineOverlay({ snapshot, config }: { snapshot: PipelineSnapshot; con
   const entry = top + coordinatePixels(config.zones.entry_zone_height, height)
   const classification = bottom - coordinatePixels(config.zones.exit_zone_height, height)
   const debug = config.tracking.debug_diagnostics
+  const viewLimit = config.surface_mapping?.enabled
+    ? config.surface_mapping.maximum_candidate_views
+    : config.capture.target_views
   const overlayTracks = snapshot.tracks.filter((track) =>
     track.hasCurrentObservation && track.state !== 'LOST' && track.state !== 'COMPLETED' && track.state !== 'REJECTED' &&
     (debug || track.confirmed),
@@ -64,7 +67,7 @@ function PipelineOverlay({ snapshot, config }: { snapshot: PipelineSnapshot; con
             <rect x={box.x} y={box.y} width={box.width} height={box.height} className="track-box" />
             <rect x={box.x} y={Math.max(0, box.y - 22)} width={Math.min(box.width, debug ? 220 : 150)} height={21} className="track-label-bg" />
             <text x={box.x + 5} y={Math.max(14, box.y - 7)} className="track-label">
-              #{track.trackId} {stateLabel(track, config.tracking.minimum_confirmation_hits)} {track.viewsCaptured}/{config.capture.target_views}
+              #{track.trackId} {stateLabel(track, config.tracking.minimum_confirmation_hits)} {track.viewsCaptured}/{viewLimit}
               {debug ? ` ${track.motionStatus} ${track.sizeStatus}` : ''}
             </text>
           </g>
@@ -80,6 +83,7 @@ function PipelineOverlay({ snapshot, config }: { snapshot: PipelineSnapshot; con
 }
 
 function TrackDetails({ track, targetViews, debug }: { track: LiveTrack; targetViews: number; debug: boolean }) {
+  const mapping = track.surfaceMapping
   return (
     <article className={`live-track-card ${track.state.toLowerCase()}`}>
       <div className="live-track-title">
@@ -95,6 +99,22 @@ function TrackDetails({ track, targetViews, debug }: { track: LiveTrack; targetV
       </dl>
       {debug && <small>{track.state === 'TENTATIVE' ? `${track.confirmationHits} confirmation hits · ` : ''}{track.motionStatus} · {track.sizeStatus}</small>}
       {track.incompleteEvidence && <p className="evidence-warning"><AlertTriangle size={12} /> Incomplete evidence</p>}
+      {mapping && (
+        <div className="surface-result">
+          <div className="surface-result-summary">
+            <strong>{mapping.status} map</strong>
+            <span>{(mapping.coverage_degrees ?? 0).toFixed(1)}&deg; coverage</span>
+            <span>{((mapping.observed_area_ratio ?? 0) * 100).toFixed(1)}% observed</span>
+          </div>
+          {(mapping.rgb_map_url || mapping.defect_overlay_url) && (
+            <div className="surface-map-images">
+              {mapping.rgb_map_url && <img src={mapping.rgb_map_url} alt={`Unwrapped RGB surface for track ${track.trackId}`} />}
+              {mapping.defect_overlay_url && <img src={mapping.defect_overlay_url} alt={`Defect overlay for track ${track.trackId}`} />}
+            </div>
+          )}
+          {mapping.failure_reasons && mapping.failure_reasons.length > 0 && <small>{mapping.failure_reasons.join('; ')}</small>}
+        </div>
+      )}
       {track.messages.length > 0 && <small title={track.messages.join('\n')}>{track.messages.at(-1)}</small>}
     </article>
   )
@@ -128,7 +148,7 @@ function CaptureLibrary({ captures, onRefresh }: { captures: PipelineCapture[]; 
         <div className="capture-library-empty">
           <Images size={24} />
           <strong>No captured views yet</strong>
-          <span>Start the live conveyor. Confirmed tracks are saved here when they cross each configured capture point.</span>
+          <span>Start the live conveyor. Confirmed tracks are sampled throughout the acquisition route.</span>
         </div>
       ) : (
         <div className="capture-track-groups">
@@ -369,7 +389,12 @@ export function LiveConveyor({ online, onError }: Props) {
         <aside className="track-panel">
           <div className="track-panel-heading"><strong>Tracked naartjies</strong><span>{tracks.length} active/retained</span></div>
           {tracks.length === 0 ? <div className="track-empty">Track details appear here without covering the fruit.</div> : tracks.map((track) => (
-            <TrackDetails key={track.trackId} track={track} targetViews={config?.capture.target_views ?? 4} debug={config?.tracking?.debug_diagnostics ?? false} />
+            <TrackDetails
+              key={track.trackId}
+              track={track}
+              targetViews={config?.surface_mapping?.enabled ? config.surface_mapping.maximum_candidate_views : (config?.capture.target_views ?? 4)}
+              debug={config?.tracking?.debug_diagnostics ?? false}
+            />
           ))}
         </aside>
       </div>

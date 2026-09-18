@@ -211,6 +211,50 @@ export interface PipelineConfig {
   }
   segmentation: { queue_size: number; workers: number }
   windows: { cpu_threads: number; live_max_fps: number }
+  surface_mapping: {
+    enabled: boolean
+    shape_model: 'oblate' | 'sphere'
+    rotation_primary_axis: 'x' | 'y'
+    rotation_direction: number
+    candidate_frame_stride: number
+    maximum_candidate_views: number
+    maximum_mapping_views: number
+    minimum_mapping_views: number
+    preferred_step_degrees: number
+    maximum_step_degrees: number
+    rotation_search_step_degrees: number
+    secondary_axis_limit_degrees: number
+    downsample_factor: number
+    texture_percentile: number
+    maximum_texture_points: number
+    minimum_texture_points: number
+    minimum_valid_point_fraction: number
+    latitude_limit_degrees: number
+    pre_roll_degrees: number
+    post_roll_degrees: number
+    target_coverage_degrees: number
+    minimum_confident_coverage: number
+    maximum_map_width: number
+  }
+}
+
+export interface SurfaceMappingResult {
+  status: 'complete' | 'partial' | 'failed' | 'fallback'
+  coverage_degrees?: number
+  observed_area_ratio?: number
+  accepted_views?: number
+  rejected_views?: number
+  mean_step_degrees?: number
+  standard_deviation_step_degrees?: number
+  alignment_confidence?: number
+  rgb_map_url?: string
+  defect_overlay_url?: string
+  observed_mask_url?: string
+  alignment_confidence_url?: string
+  failure_reasons?: string[]
+  defects?: Record<string, { observed_surface_ratio: number; target_surface_ratio: number }>
+  total_known_defect_coverage?: number
+  incomplete_evidence?: boolean
 }
 
 export type TrackState =
@@ -273,6 +317,10 @@ export interface LiveTrack {
   exited: boolean
   failureReason: string | null
   classificationLatencyMs: number
+  candidateViews: number
+  rejectedViews: number
+  surfaceMapping: SurfaceMappingResult | null
+  defects: Record<string, { observed_surface_ratio: number; target_surface_ratio: number }>
 }
 
 export interface PipelineSnapshot {

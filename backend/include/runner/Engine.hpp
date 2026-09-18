@@ -65,6 +65,7 @@ bool tensorrt_available();
 EngineRuntimeInfo engine_runtime_info();
 std::string engine_name();
 nlohmann::json python_backend_health();
+nlohmann::json python_surface_mapping(const nlohmann::json& request);
 nlohmann::json model_format_capabilities();
 nlohmann::json discover_models();
 

@@ -291,6 +291,11 @@ runner::SegmentationResult segmentation_from_inference(const runner::InferenceRe
                 auto& probability = result.class_probabilities[static_cast<std::size_t>(detection.class_id)];
                 probability = std::max(probability, detection.confidence);
             }
+            if (detection.mask.width > 0 && detection.mask.height > 0 && !detection.mask.counts.empty()) {
+                result.defect_instances.push_back({
+                    detection.class_id, detection.label, detection.confidence, detection.mask,
+                });
+            }
         }
         // Conservative per-view selection: the worst class with a reported
         // probability is retained for the separate track-level aggregator.
@@ -346,7 +351,8 @@ int main(int argc, char** argv) {
                 return segmentation_from_inference(models.infer_pipeline_model(model_id, job.crop_image,
                     pipeline_config.class_confidence_threshold, pipeline_config.detection_iou));
             },
-            crop_live_frame
+            crop_live_frame,
+            [](const json& request) { return runner::python_surface_mapping(request); }
         );
         pipeline->start();
         const auto started_at = std::chrono::steady_clock::now();
@@ -427,6 +433,29 @@ int main(int argc, char** argv) {
                 );
             });
         });
+
+        server.Get(R"(/api/pipeline/results/([0-9]+)/(surface_rgb\.png|surface_defect_overlay\.png|surface_observed_mask\.png|surface_alignment_confidence\.png|surface_alignment_confidence\.npy|surface_defect_[A-Za-z0-9_-]+\.npy|surface_metadata\.json))",
+            [&](const httplib::Request& request, httplib::Response& response) {
+                guarded(response, [&] {
+                    const int track_id = std::stoi(request.matches[1].str());
+                    const std::string filename = request.matches[2].str();
+                    const auto asset = pipeline->result_asset(track_id, filename);
+                    if (!asset) {
+                        respond_json(response, {{"error", "surface result asset not found"}}, 404);
+                        return;
+                    }
+                    response.status = 200;
+                    response.set_header("Cache-Control", "no-store");
+                    const bool json_asset = filename.size() >= 5 && filename.compare(filename.size() - 5, 5, ".json") == 0;
+                    const bool numpy_asset = filename.size() >= 4 && filename.compare(filename.size() - 4, 4, ".npy") == 0;
+                    response.set_content(
+                        std::string(reinterpret_cast<const char*>(asset->data()), asset->size()),
+                        json_asset ? "application/json; charset=utf-8" :
+                        numpy_asset ? "application/octet-stream" : "image/png"
+                    );
+                });
+            }
+        );
 
         server.Post("/api/pipeline/reset", [&](const httplib::Request&, httplib::Response& response) {
             pipeline->reset();

@@ -4,7 +4,7 @@ Inference Runner Windows is the Windows/RTX edition of the local inference app. 
 
 The application is local-first: model files, frames, predictions, benchmark samples, and conveyor results stay on this computer.
 
-For a source-by-source explanation of the Python algorithms, React/C++ HTTP bridge, live tracking, 20/40/60/80 capture scheduler, grading state machine, and a recommended reconstruction order, see [Rebuilding Inference Runner from scratch](docs/rebuild-from-scratch.md).
+For a source-by-source explanation of the Python algorithms, React/C++ HTTP bridge, live tracking, capture and surface-mapping pipeline, grading state machine, and a recommended reconstruction order, see [Rebuilding Inference Runner from scratch](docs/rebuild-from-scratch.md).
 
 ## Target laptop
 
@@ -174,9 +174,10 @@ The browser accepts a webcam or video file, JPEG-encodes frames locally, and sen
 2. normalized top-to-bottom ROI and bounding-box plausibility filtering;
 3. ByteTrack association with separate low, high, and new-track confidence thresholds;
 4. tentative confirmation from repeated high-confidence hits and downward motion;
-5. one crop per confirmed fruit at 20%, 40%, 60%, and 80% of the acquisition route; during a detector dropout, ByteTrack's projected box continues to advance and supply these crops under the same track ID until reacquisition or the configured miss buffer expires;
-6. bounded asynchronous defect segmentation and conservative multi-view grading;
-7. one-time completion/counting at the lower classification boundary.
+5. a bounded dense sequence of native-aspect-ratio crops for each confirmed ByteTrack ID while it crosses the acquisition route (the legacy 20/40/60/80 scheduler is used only when `surface_mapping.enabled` is false);
+6. asynchronous defect segmentation on every accepted crop, retaining per-class instance masks and confidences;
+7. background oblate-spheroid fitting, texture-based inter-view rotation estimation, longitude-latitude projection, and area-weighted defect fusion after the track reaches the lower classification boundary;
+8. one-time completion/counting, with the conservative existing multi-view grade retained whenever mapping is partial or falls back.
 
 The `zones` block controls the normalized left/right/top/bottom ROI plus entry and exit-zone heights. The `tracking` block controls minimum box ratios, confirmation hits, motion/stationary tolerances, optional strict entry gating, and debug diagnostics. Keep `tracking.debug_diagnostics` off during normal operation; when enabled, tentative/rejected candidates and their filter reasons are exposed in the dashboard snapshot.
 
@@ -190,6 +191,32 @@ Windows performance settings live under `windows` in the pipeline JSON:
 ```
 
 Completed records and confirmed tracks that later fail classification are saved under `data/results` and appended to `data/logs/tracks.jsonl`. Rejected tentative flickers are not written as fruit results. Enable `output.debug_save_images` only when crop/mask inspection is needed.
+
+### Full-surface mapping
+
+`surface_mapping` in `config/pipeline.json` controls the software-only mapper. It uses the existing RGB camera, GrabCut silhouettes, an oblate spheroid (with a near-circular sphere fallback), and the constrained two-axis rotation search described by [Albiol et al. (2021)](https://doi.org/10.3390/s21062232). RGB and crop-level defect probabilities are fused with at most two contributing views per map point following [Albiol et al. (2022)](https://doi.org/10.3390/s22145452). Unobserved pixels stay false in the observed mask and black/zero in saved maps.
+
+The starting profile buffers at most 30 candidates, chooses at most 20 mapping views, targets roughly 24 degrees between views, rejects gaps above 40 degrees, and requires estimated coverage rather than a fixed number of images for completion. `candidate_frame_stride`, `rotation_primary_axis`, `rotation_direction`, focus/mask thresholds, and the coverage thresholds must be calibrated with real Unipack conveyor video. A result is `complete` only when its angular coverage, maximum gap, reliable-pair ratio, observed area, and mean alignment confidence all pass configuration. Otherwise the API reports `partial`, `fallback`, or `failed` and sets `incomplete_evidence`.
+
+Each finalized track writes these files below `data/results/track_<id>/`:
+
+- `surface_rgb.png`, `surface_defect_overlay.png`, and `surface_observed_mask.png`;
+- `surface_alignment_confidence.png` plus its float32 `.npy` data;
+- one float32 `surface_defect_<class>.npy` probability map per known segmentation class;
+- `surface_metadata.json`, including accepted/rejected frames, pair rotations, coverage, area-weighted defect ratios, grade, status, failure reasons, and measured stage timings.
+
+The denominator is explicit in metadata: `observed_surface_ratio` uses reliably observed area, while `target_surface_ratio` uses the complete configured latitude band. The mapper does not treat absence of a trained defect class as proof that an unseen or novel defect is absent.
+
+Run a crop-folder diagnostic with the project environment:
+
+```powershell
+.\.venv\Scripts\python.exe .\backend\python\surface_mapping.py `
+  --input-folder .\path\to\one-track-crops `
+  --output-folder .\build\surface-diagnostic `
+  --config .\config\pipeline.json
+```
+
+The input folder must contain one track's crops in filename order. The command saves cleaned masks, selected texture points, correspondence visualizations, rotation-error grids, the RGB/overlay/observed maps, and a coverage/timing summary. Generated diagnostics belong under `build/` or another ignored directory; do not commit them.
 
 ## Command-line options
 
@@ -219,7 +246,8 @@ The React app and native service share port `8080`:
 - `POST /api/models/:id/activate` — activate a model;
 - `POST /api/infer` — still-image inference; visual-grounding requests additionally accept `prompt`, `groundingMode`, and `generationMode` multipart fields;
 - `POST /api/benchmark` — warm-up plus repeated sequential inference through the selected backend;
-- `GET /api/pipeline` — live tracks and timing snapshot;
+- `GET /api/pipeline` — live tracks, grading, surface coverage and mapping status;
+- `GET /api/pipeline/results/:trackId/:surfaceAsset` — a saved RGB, overlay, observed-mask, confidence-map, or metadata asset;
 - `POST /api/pipeline/frame` — one live frame;
 - `POST /api/pipeline/reset` — clear live tracking state.
 

@@ -12,7 +12,8 @@ std::size_t tensor_element_count(const std::vector<int>& shape) {
     if (shape.empty()) throw std::invalid_argument("tensor shape cannot be empty");
     std::size_t count = 1;
     for (int dimension : shape) {
-        if (dimension <= 0) throw std::invalid_argument("concrete tensor dimensions must be positive");
+        if (dimension < 0) throw std::invalid_argument("concrete tensor dimensions cannot be negative");
+        if (dimension == 0) return 0;
         if (count > std::numeric_limits<std::size_t>::max() / static_cast<std::size_t>(dimension)) {
             throw std::overflow_error("tensor element count overflows size_t");
         }
@@ -24,7 +25,7 @@ std::size_t tensor_element_count(const std::vector<int>& shape) {
 bool tensor_shape_matches(const std::vector<int>& actual, const std::vector<int>& expected) {
     if (actual.size() != expected.size()) return false;
     for (std::size_t index = 0; index < actual.size(); ++index) {
-        if (actual[index] <= 0 || (expected[index] != -1 && actual[index] != expected[index])) return false;
+        if (actual[index] < 0 || (expected[index] != -1 && actual[index] != expected[index])) return false;
     }
     return true;
 }
